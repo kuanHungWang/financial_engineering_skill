@@ -1,0 +1,36 @@
+# European Knock-In, American Knock-Out (EKIAKO) put on SPX, 1Y.
+#   - put struck at 100% of the initial level, notional 1,000,000
+#   - knocks IN only if SPX <= 80% on the expiry date        (European: one observation date)
+#   - knocks OUT if SPX >= 110% on any NYSE business day     (American: daily observation)
+# Payoff at expiry: notional * max(1 - S_T/S_0, 0) if knocked in and never knocked out, else 0.
+valuation_date: 2026-09-28
+market_data: market/mock_market.yaml
+
+model:
+  type: black_scholes          # local vol from the SPX surface
+  underlying: SPX
+  discount_curve: USD
+
+schedules:
+  expiry_only: {type: dates, dates: [maturity]}
+  daily: {type: generated, frequency: 1D, calendar: UnitedStates.NYSE}
+
+trade:
+  id: EKIAKO-SPX-1Y
+  currency: USD
+  maturity: 2027-09-28
+  legs:
+    - id: ekiako_put
+      type: option_payoff
+      underlying: SPX
+      option_type: put
+      strike: 1.00
+      notional: 1000000
+      conditions:
+        - {type: knock_in, underlying: SPX, direction: down, barrier: 0.80, observation: expiry_only}
+  termination_events:
+    - {id: american_ko, type: knock_out, underlying: SPX, direction: up, barrier: 1.10, observation: daily}
+
+pricing:
+  num_paths: 20000
+  seed: 42

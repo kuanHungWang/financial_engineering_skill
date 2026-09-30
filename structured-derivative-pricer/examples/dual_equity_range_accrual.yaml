@@ -1,0 +1,42 @@
+# 1Y dual-index range accrual on SPX and NDX (performance vs initial), investor's view, notional 1,000,000.
+#   - coupon 8% p.a. x (days on which BOTH SPX and NDX are within 85%..110% of initial) / (business days),
+#     30/360, quarterly
+#   - kick-in on the coupons: coupons are paid only for periods ending after SPX has closed at or
+#     above 103% of initial on some daily close (the knock_in condition is the kick-in mask)
+#   - par redemption at maturity
+# Two correlated local-vol underlyings; the correlation must be stated explicitly.
+valuation_date: 2026-09-28
+market_data: market/mock_market_multi.yaml
+
+model:
+  type: black_scholes
+  underlyings: [SPX, NDX]
+  correlation: [[1.0, 0.85], [0.85, 1.0]]
+  discount_curve: USD
+
+observables:
+  SPX_PERF: {type: equity, underlying: SPX, mode: performance}
+  NDX_PERF: {type: equity, underlying: NDX, mode: performance}
+
+schedules:
+  quarterly: {type: generated, frequency: 3M, calendar: UnitedStates.NYSE}
+  daily: {type: generated, frequency: 1D, calendar: UnitedStates.NYSE}
+
+trade:
+  id: DUAL-RA-1Y
+  maturity: 1Y
+  legs:
+    - id: range_coupon
+      type: range_accrual
+      rate: 0.08
+      notional: 1000000
+      schedule: quarterly
+      observation_calendar: UnitedStates.NYSE
+      range:
+        - {observable: SPX_PERF, lower: 0.85, upper: 1.10}
+        - {observable: NDX_PERF, lower: 0.85, upper: 1.10}
+      conditions:
+        - {type: knock_in, underlying: SPX, direction: up, barrier: 1.03, observation: daily}
+    - {id: principal, type: fixed_amount, amount: 1000000, payment_date: maturity}
+
+pricing: {num_paths: 20000, seed: 9}

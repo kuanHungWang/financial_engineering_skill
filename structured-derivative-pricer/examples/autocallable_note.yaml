@@ -1,0 +1,40 @@
+# 2Y autocallable equity-linked note on SPX, investor's view, notional 1,000,000.
+#   - 8% p.a. coupon paid quarterly (30/360) while the note is alive
+#   - autocall: if SPX >= 105% on a quarterly observation date before maturity, the note redeems at
+#     par on that date; that date's coupon is still paid (settle_on_event_date: true). The final
+#     date is not an autocall date: the principal leg already redeems there (else par is paid twice).
+#   - at maturity, if not autocalled: par redemption, minus a short European down-and-in put
+#     (KI 70%, observed at maturity only): investor loses 1:1 below the initial level if knocked in
+# Composition: fixed_coupon + fixed_amount + short option_payoff(knock_in) + knock_out event with rebate.
+valuation_date: 2026-09-28
+market_data: market/mock_market.yaml
+
+model: {type: black_scholes, underlying: SPX, discount_curve: USD}
+
+schedules:
+  quarterly: {type: generated, frequency: 3M, calendar: UnitedStates.NYSE, convention: ModifiedFollowing}
+  autocall_dates: {type: generated, frequency: 3M, end: 2028-06-28, calendar: UnitedStates.NYSE,
+                   convention: ModifiedFollowing}
+  final: {type: dates, dates: [maturity]}
+
+trade:
+  id: ACN-SPX-2Y
+  maturity: 2028-09-28
+  legs:
+    - {id: coupons, type: fixed_leg, rate: 0.08, notional: 1000000, schedule: quarterly,
+       day_count: Thirty360.BondBasis}
+    - {id: principal, type: fixed_amount, amount: 1000000, payment_date: maturity}
+    - id: short_dip
+      type: option_payoff
+      underlying: SPX
+      option_type: put
+      strike: 1.0
+      notional: 1000000
+      position: short
+      conditions:
+        - {type: knock_in, underlying: SPX, direction: down, barrier: 0.70, observation: final}
+  termination_events:
+    - {id: autocall, type: knock_out, underlying: SPX, direction: up, barrier: 1.05,
+       observation: autocall_dates, rebate: 1000000, rebate_payment: at_hit, settle_on_event_date: true}
+
+pricing: {num_paths: 20000, seed: 7}

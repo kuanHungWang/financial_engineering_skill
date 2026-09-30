@@ -1,0 +1,27 @@
+# 3Y SOFR floating-rate note, investor's view, notional 1,000,000.
+#   - coupon = SOFR compounded in arrears + 50bp, Act/360, paid quarterly 2 business days after
+#     each period end; rate cut-off (lockout) of 2 business days
+#   - par redemption at maturity
+# Deterministic rates (the equity model only discounts): a plain FRN has no optionality, so the
+# price is exact with zero Monte Carlo error. Add a cap/floor and the validator asks for hull_white.
+valuation_date: 2026-09-28
+market_data: market/mock_market.yaml
+
+model: {type: black_scholes, underlying: SPX, discount_curve: USD}
+
+observables:
+  SOFR: {type: overnight_rate, curve: USD, calendar: UnitedStates.SOFR}
+
+schedules:
+  quarterly: {type: generated, frequency: 3M, calendar: UnitedStates.SOFR}
+
+trade:
+  id: SOFR-FRN-3Y
+  maturity: 3Y
+  legs:
+    - {id: coupons, type: floating_leg, index: SOFR, fixing: compounded_in_arrears, lockout_days: 2,
+       spread: 0.005, notional: 1000000, schedule: quarterly, day_count: Actual360,
+       payment_lag: 2, payment_calendar: UnitedStates.SOFR}
+    - {id: principal, type: fixed_amount, amount: 1000000, payment_date: maturity}
+
+pricing: {num_paths: 1000, seed: 1}

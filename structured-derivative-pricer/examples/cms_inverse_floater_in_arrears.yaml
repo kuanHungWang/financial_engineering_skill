@@ -1,0 +1,31 @@
+# 10Y hybrid inverse CMS floater, investor's view, notional 1,000,000.
+#   - year 1: fixed 4.5% p.a., 30/360
+#   - years 2-10: coupon = 5% - 0.8 x CMS5Y, capped at 4%, floored at 2%, CMS fixed in arrears
+#     (2 business days before each period end), Act/360
+#   - coupons quarterly; par redemption at maturity
+# Two legs share the coupon schedule split at 1Y. The formula could equally be a `linear` observable
+# {constant: 0.05, terms: [{observable: CMS5Y, weight: -0.8}]} used as the index with gearing 1.
+valuation_date: 2026-09-28
+market_data: market/mock_market.yaml
+
+model: {type: hull_white, discount_curve: USD, mean_reversion: 0.03, volatility: 0.01}
+
+observables:
+  CMS5Y: {type: swap_rate, curve: USD, tenor: 5Y, fixed_frequency: 6M, calendar: UnitedStates.GovernmentBond}
+
+schedules:
+  year1: {type: generated, frequency: 3M, end: 1Y, calendar: UnitedStates.GovernmentBond}
+  year2_10: {type: generated, frequency: 3M, start: 1Y, calendar: UnitedStates.GovernmentBond}
+
+trade:
+  id: INV-CMS-10Y
+  maturity: 10Y
+  legs:
+    - {id: fixed_y1, type: fixed_leg, rate: 0.045, notional: 1000000, schedule: year1,
+       day_count: Thirty360.BondBasis}
+    - {id: inverse_cms, type: floating_leg, index: CMS5Y, gearing: -0.8, spread: 0.05, cap: 0.04, floor: 0.02,
+       fixing: in_arrears, fixing_lag: 2, fixing_calendar: UnitedStates.GovernmentBond,
+       notional: 1000000, schedule: year2_10, accrual_start: 1Y, day_count: Actual360}
+    - {id: principal, type: fixed_amount, amount: 1000000, payment_date: maturity}
+
+pricing: {num_paths: 20000, seed: 8}

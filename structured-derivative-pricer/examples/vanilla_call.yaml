@@ -1,0 +1,13 @@
+# 1Y ATM European call on SPX. An analytic engine exists, so method: auto prices it in
+# closed form. Run with `--set pricing.method=mc` to price by Monte Carlo and see the
+# automatic cross-check against the closed form.
+valuation_date: 2026-09-28
+market_data: market/mock_market.yaml
+
+model: {type: black_scholes, underlying: SPX, discount_curve: USD}
+
+trade:
+  id: CALL-SPX-1Y
+  maturity: 1Y
+  legs:
+    - {id: call, type: option_payoff, underlying: SPX, option_type: call, strike: 1.0, notional: 1000000}

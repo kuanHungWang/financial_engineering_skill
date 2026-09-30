@@ -1,0 +1,41 @@
+# 5Y non-callable CMS spread range accrual note on USD, investor's view, notional 1,000,000.
+#   - coupon 6% p.a. (30/360), paid quarterly, accruing on each business day on which
+#     CMS10Y - CMS2Y >= 0 AND 3M term rate <= 5.5% (both conditions must hold)
+#   - rate cut-off: the last 5 business days of each period use the observation 6 days before end
+#   - par redemption at maturity
+# Hull-White 1F (a = 3%, sigma = 100bp) on the bootstrapped USD curve; single-curve CMS.
+# Note: a 1F model makes CMS10Y and CMS2Y highly correlated, which understates spread volatility.
+valuation_date: 2026-09-28
+market_data: market/mock_market.yaml
+
+model: {type: hull_white, discount_curve: USD, mean_reversion: 0.03, volatility: 0.01}
+
+observables:
+  CMS10Y: {type: swap_rate, curve: USD, tenor: 10Y, fixed_frequency: 6M, calendar: UnitedStates.GovernmentBond}
+  CMS2Y:  {type: swap_rate, curve: USD, tenor: 2Y, fixed_frequency: 6M, calendar: UnitedStates.GovernmentBond}
+  L3M:    {type: term_rate, curve: USD, tenor: 3M, calendar: UnitedStates.GovernmentBond}
+  CMS_SPREAD:
+    type: linear
+    terms: [{observable: CMS10Y, weight: 1}, {observable: CMS2Y, weight: -1}]
+
+schedules:
+  quarterly: {type: generated, frequency: 3M, calendar: UnitedStates.GovernmentBond}
+
+trade:
+  id: CMSRA-5Y
+  maturity: 5Y
+  legs:
+    - id: range_coupon
+      type: range_accrual
+      rate: 0.06
+      notional: 1000000
+      schedule: quarterly
+      day_count: Thirty360.BondBasis
+      observation_calendar: UnitedStates.GovernmentBond
+      range_cutoff_days: 5
+      range:
+        - {observable: CMS_SPREAD, lower: 0.0}
+        - {observable: L3M, upper: 0.055}
+    - {id: principal, type: fixed_amount, amount: 1000000, payment_date: maturity}
+
+pricing: {num_paths: 10000, seed: 3}

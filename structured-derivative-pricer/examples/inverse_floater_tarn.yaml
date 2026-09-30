@@ -1,0 +1,34 @@
+# 5Y inverse-floater TARN note, investor's view, notional 1,000,000.
+#   - coupon = max(9% - 2 x USD 3M term rate, 0), Act/360, fixed in advance (2 business days), quarterly
+#   - target: once paid coupons total 12% of notional (120,000) the note redeems at par on that coupon
+#     date; the crossing coupon is capped so the total is exactly the target
+#   - if the target is never reached, par at maturity (no guarantee of the shortfall)
+# Hull-White 1F: the 0% floor is an option on rates, so rates must be stochastic.
+valuation_date: 2026-09-28
+market_data: market/mock_market.yaml
+
+model: {type: hull_white, discount_curve: USD, mean_reversion: 0.03, volatility: 0.01}
+
+observables:
+  L3M:
+    type: term_rate
+    curve: USD
+    tenor: 3M
+    calendar: UnitedStates.GovernmentBond
+    history: {2026-09-24: 0.0426}   # first coupon's fixing, 2 business days before the start (mock value)
+
+schedules:
+  quarterly: {type: generated, frequency: 3M, calendar: UnitedStates.GovernmentBond}
+
+trade:
+  id: INVF-TARN-5Y
+  maturity: 5Y
+  legs:
+    - {id: coupons, type: floating_leg, index: L3M, fixing: in_advance, fixing_lag: 2,
+       fixing_calendar: UnitedStates.GovernmentBond, gearing: -2.0, spread: 0.09, floor: 0.0,
+       notional: 1000000, schedule: quarterly, day_count: Actual360}
+    - {id: principal, type: fixed_amount, amount: 1000000, payment_date: maturity}
+  termination_events:
+    - {id: tarn, type: target, legs: [coupons], target: 120000, crossing_coupon: capped, rebate: 1000000}
+
+pricing: {num_paths: 20000, seed: 5}

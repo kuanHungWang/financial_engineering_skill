@@ -1,0 +1,30 @@
+# Same EKIAKO put as ekiako_put.yaml, under a Heston model calibrated to the SPX surface.
+# Model risk check: compare with the local-vol price of ekiako_put.yaml.
+valuation_date: 2026-09-28
+market_data: market/mock_market.yaml
+
+model:
+  type: heston                 # no params given -> calibrate to the vol surface
+  underlying: SPX
+  discount_curve: USD
+
+schedules:
+  expiry_only: {type: dates, dates: [maturity]}
+  daily: {type: generated, frequency: 1D, calendar: UnitedStates.NYSE}
+
+trade:
+  id: EKIAKO-SPX-1Y-HESTON
+  maturity: 2027-09-28
+  legs:
+    - id: ekiako_put
+      type: option_payoff
+      underlying: SPX
+      option_type: put
+      strike: 1.00
+      notional: 1000000
+      conditions:
+        - {type: knock_in, underlying: SPX, direction: down, barrier: 0.80, observation: expiry_only}
+  termination_events:
+    - {id: american_ko, type: knock_out, underlying: SPX, direction: up, barrier: 1.10, observation: daily}
+
+pricing: {num_paths: 20000, seed: 42}

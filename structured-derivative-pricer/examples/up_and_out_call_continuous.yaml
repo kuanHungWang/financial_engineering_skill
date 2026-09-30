@@ -1,0 +1,16 @@
+# 1Y up-and-out call, continuously monitored, cash rebate paid at hit.
+# Matches QuantLib's AnalyticBarrierEngine exactly, so method: auto prices it analytically.
+# Changing observation to a daily schedule makes it a discretely-monitored barrier -> Monte Carlo.
+valuation_date: 2026-09-28
+market_data: market/mock_market.yaml
+
+model: {type: black_scholes, underlying: SPX-FLATVOL, discount_curve: USD-FLAT}
+
+trade:
+  id: UOC-SPX-1Y
+  maturity: 1Y
+  legs:
+    - {id: call, type: option_payoff, underlying: SPX-FLATVOL, option_type: call, strike: 1.0, notional: 1000000}
+  termination_events:
+    - {id: ko, type: knock_out, underlying: SPX-FLATVOL, direction: up, barrier: 1.30,
+       observation: continuous, rebate: 10000}

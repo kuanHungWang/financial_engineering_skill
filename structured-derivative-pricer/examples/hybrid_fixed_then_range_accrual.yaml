@@ -1,0 +1,37 @@
+# 10Y hybrid note on USD rates, investor's view, notional 1,000,000.
+#   - year 1: fixed 5% p.a. (every day accrues)
+#   - years 2-10: 5% p.a. x (business days with 0% <= 3M rate <= upper bound) / (business days), where the
+#     upper bound steps up: 4.5% in years 2-4, 5.0% in years 5-7, 5.5% in years 8-10
+#   - coupons quarterly, 30/360; par redemption at maturity
+# One range_accrual leg: a period whose bounds are all null accrues every day, i.e. pays the fixed rate.
+# Bounds (and rate, notional, gearing, spread, cap, floor) accept a number, a per-period list, or
+# {date: value} steps keyed by period start.
+valuation_date: 2026-09-28
+market_data: market/mock_market.yaml
+
+model: {type: hull_white, discount_curve: USD, mean_reversion: 0.03, volatility: 0.01}
+
+observables:
+  L3M: {type: term_rate, curve: USD, tenor: 3M, calendar: UnitedStates.GovernmentBond}
+
+schedules:
+  quarterly: {type: generated, frequency: 3M, calendar: UnitedStates.GovernmentBond}
+
+trade:
+  id: HYBRID-RA-10Y
+  maturity: 10Y
+  legs:
+    - id: coupon
+      type: range_accrual
+      rate: 0.05
+      notional: 1000000
+      schedule: quarterly
+      day_count: Thirty360.BondBasis
+      observation_calendar: UnitedStates.GovernmentBond
+      range:
+        - observable: L3M
+          lower: {effective_date: null, 1Y: 0.0}
+          upper: {effective_date: null, 1Y: 0.045, 4Y: 0.050, 7Y: 0.055}
+    - {id: principal, type: fixed_amount, amount: 1000000, payment_date: maturity}
+
+pricing: {num_paths: 10000, seed: 21}
