@@ -16,7 +16,7 @@ sys.path.insert(0, str(ROOT))
 
 from pricer import build_plan, catalog, run  # noqa: E402
 from pricer import conventions as cv  # noqa: E402
-from pricer.market import simulation_curve  # noqa: E402
+from pricer.market import BootstrapCurve, simulation_curve  # noqa: E402
 
 EX = ROOT / "examples"
 
@@ -227,6 +227,28 @@ def test_simulation_curve_preserves_discount_factors():
     assert resampled and out.dayCounter() == ql.Actual365Fixed()
     for d in [ref + 1, ref + 33, ref + 365, ref + 799]:
         assert out.discount(d) == pytest.approx(src.discount(d), rel=1e-12)
+
+
+@pytest.mark.parametrize("currency", sorted(cv.CURVE_CONVENTIONS))
+def test_bootstrap_reprices_its_quotes(currency):
+    ref = ql.Date(28, 9, 2026)
+    ql.Settings.instance().evaluationDate = ref
+    deposit = [{"tenor": "3M", "rate": 0.0425}, {"tenor": "6M", "rate": 0.0415}]
+    swap = [{"tenor": "2Y", "rate": 0.0375}, {"tenor": "5Y", "rate": 0.036}, {"tenor": "10Y", "rate": 0.037}]
+    spec = BootstrapCurve.Spec(currency=currency, deposit=deposit, swap=swap)
+    h = BootstrapCurve.build(spec, ref)
+    assert h.dayCounter() == ql.Actual365Fixed()
+    conv = cv.curve_conventions(currency)
+    for q in deposit:
+        idx = ql.IborIndex("dep", cv.period(q["tenor"]), conv.settlement_days, conv.currency, conv.calendar,
+                           conv.roll, conv.end_of_month, conv.money_market_day_count, h)
+        assert idx.fixing(conv.calendar.adjust(ref)) == pytest.approx(q["rate"], abs=1e-10)
+    engine = ql.DiscountingSwapEngine(h)
+    for q in swap:
+        sw = ql.MakeVanillaSwap(cv.period(q["tenor"]), conv.ibor_index().clone(h), 0.0, ql.Period(0, ql.Days),
+                                fixedLegTenor=ql.Period(conv.fixed_frequency),
+                                fixedLegDayCount=conv.fixed_day_count, pricingEngine=engine)
+        assert sw.fairRate() == pytest.approx(q["rate"], abs=1e-10)
 
 
 def test_catalog_covers_every_kind():
