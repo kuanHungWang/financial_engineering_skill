@@ -1,6 +1,6 @@
 ---
 name: structured-derivative-pricer
-description: Price exotic and structured derivatives (barrier options, EKIAKO, autocallables, equity-linked notes, fixed/floating/SOFR-compounded legs, inverse floaters, range accruals on equities, rates, CMS spreads or baskets, TARNs, kick-in coupons) by writing a declarative YAML trade spec that a pre-built QuantLib/fastFE engine validates and prices by Monte Carlo, or in closed form when QuantLib has one. Use when the user gives a term sheet or product description and asks for a fair value, NPV, MTM, or pricing model, including "price this note", "value this barrier option", "build a pricing model for...", "結構型商品評價", "公平價值". You write the spec, never pricing code.
+description: Price exotic and structured derivatives (barrier options, EKIAKO, autocallables, equity-linked notes, fixed/floating/SOFR-compounded legs, inverse floaters, range accruals on equities, rates, CMS spreads or baskets, TARNs, kick-in coupons) by writing a declarative YAML trade spec that a pre-built QuantLib engine validates and prices by Monte Carlo, or in closed form when QuantLib has one. Use when the user gives a term sheet or product description and asks for a fair value, NPV, MTM, or pricing model, including "price this note", "value this barrier option", "build a pricing model for...", "結構型商品評價", "公平價值". You write the spec, never pricing code.
 ---
 
 # Structured Derivative Pricer
@@ -22,7 +22,7 @@ combinations, worst-of), **legs** (fixed, floating, range accrual, option, fixed
 ## Setup (once per machine)
 
 ```bash
-PY=$(<skill_dir>/scripts/setup.sh)      # creates <skill_dir>/.venv with QuantLib + fastFE, prints its python
+PY=$(<skill_dir>/scripts/setup.sh)      # creates <skill_dir>/.venv with QuantLib, prints its python
 ```
 
 After that, run every command below as `$PY <skill_dir>/scripts/price.py ...`.

@@ -7,7 +7,7 @@ inline it under `market_data:`. Exact fields: `price.py catalog curve` and `pric
 as_of: 2026-09-28                 # should equal the trade's valuation_date (warning otherwise)
 curves:                           # discount / funding curves, referenced by name from the model
   USD:
-    type: bootstrap               # fastFE bootstrap_curve with its currency conventions
+    type: bootstrap               # QuantLib piecewise bootstrap with the currency conventions
     currency: USD                 # USD | EUR | JPY | GBP | TWD
     deposit: [{tenor: 3M, rate: 0.0425}, {tenor: 6M, rate: 0.0415}]
     swap:    [{tenor: 1Y, rate: 0.0395}, {tenor: 5Y, rate: 0.0360}]
@@ -51,7 +51,12 @@ equities:
 - A curve named only by a rate observable (e.g. a forecast curve different from the discount curve) is
   built too. Under `hull_white` it moves with the model factor (deterministic basis to the discount curve).
 - Past index fixings are not market data files: they go in the observable's `history` in the trade spec.
-- Curves whose day count is not Actual/365F (fastFE's USD bootstrap uses 30E/360) are
+- `bootstrap` curves: deposits use the currency's money-market day count (Act/360; Act/365F for
+  GBP, TWD) with 2 settlement days; swaps are annual 30/360 fixed against a 6M floating index on
+  the currency's calendar. The curve is on Actual/365F. Beyond the last quote it extrapolates
+  with its `method` (`logLinearDiscount` = flat forward; `linearZero` continues the last zero-rate
+  slope), so quote tenors should reach the longest date the trade reads, including CMS tenors.
+- Curves whose day count is not Actual/365F (e.g. a `flat` or `zero` curve on 30/360) are
   re-expressed on Actual/365F for simulation. Discount factors are unchanged on every date,
   and the result carries a note saying so.
 - Vol surfaces use bicubic interpolation and flat strike extrapolation, which keeps the Dupire

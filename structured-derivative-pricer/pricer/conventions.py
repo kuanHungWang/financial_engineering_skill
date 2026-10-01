@@ -8,6 +8,7 @@ from __future__ import annotations
 import datetime as dt
 import difflib
 import re
+from dataclasses import dataclass
 
 import QuantLib as ql
 
@@ -56,6 +57,45 @@ DATE_GENERATION = {
     "Backward": ql.DateGeneration.Backward,
 }
 
+@dataclass(frozen=True)
+class CurveConventions:
+    """Quote conventions for bootstrapping a currency's curve from deposits and par swaps.
+
+    Swaps are a fixed leg against an IBOR-style floating leg; the floating index is built
+    with `ql.IborIndex` from the same calendar and money-market day count as the deposits."""
+    calendar: ql.Calendar
+    settlement_days: int
+    money_market_day_count: ql.DayCounter            # deposits and the swap floating index
+    fixed_frequency: int
+    fixed_day_count: ql.DayCounter
+    float_tenor: ql.Period
+    currency: ql.Currency
+    roll: int = ql.ModifiedFollowing
+    end_of_month: bool = False
+
+    def ibor_index(self) -> ql.IborIndex:
+        return ql.IborIndex(f"{self.currency.code()}-IBOR", self.float_tenor, self.settlement_days,
+                            self.currency, self.calendar, self.roll, self.end_of_month,
+                            self.money_market_day_count)
+
+
+def _curve_conventions(cal, mm_dc, ccy, settlement_days=2):
+    return lambda: CurveConventions(
+        calendar=cal(), settlement_days=settlement_days, money_market_day_count=mm_dc(),
+        fixed_frequency=ql.Annual, fixed_day_count=ql.Thirty360(ql.Thirty360.BondBasis),
+        float_tenor=ql.Period(6, ql.Months), currency=ccy())
+
+
+# Annual 30/360 fixed vs 6M floating for every currency (simple, uniform par-swap quotes).
+CURVE_CONVENTIONS = {
+    "USD": _curve_conventions(lambda: ql.UnitedStates(ql.UnitedStates.Settlement), ql.Actual360, ql.USDCurrency),
+    "EUR": _curve_conventions(ql.TARGET, ql.Actual360, ql.EURCurrency),
+    "JPY": _curve_conventions(ql.Japan, ql.Actual360, ql.JPYCurrency),
+    "GBP": _curve_conventions(lambda: ql.UnitedKingdom(ql.UnitedKingdom.Settlement), ql.Actual365Fixed,
+                              ql.GBPCurrency),
+    "TWD": _curve_conventions(ql.Taiwan, ql.Actual365Fixed, ql.TWDCurrency),
+}
+
 _TENOR_RE = re.compile(r"^-?\d+[DWMY]$", re.IGNORECASE)
 
 
@@ -89,6 +129,10 @@ def day_count(name: str) -> ql.DayCounter:
 
 def bdc(name: str) -> int:
     return _lookup(BUSINESS_DAY_CONVENTIONS, name, "business day convention")
+
+
+def curve_conventions(currency: str) -> CurveConventions:
+    return _lookup(CURVE_CONVENTIONS, currency, "curve currency")
 
 
 def is_tenor(s) -> bool:

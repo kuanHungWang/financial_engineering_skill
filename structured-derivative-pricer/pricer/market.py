@@ -1,14 +1,11 @@
-"""Market data components: yield curves and Black volatility term structures.
-
-Built on fastFE (bootstrap_curve, create_black_vol_curve, create_black_vol_surface).
+"""Market data components: yield curves and Black volatility term structures, built from
+QuantLib rate helpers, piecewise curves and Black variance term structures.
 """
 from __future__ import annotations
 
 from typing import Literal
 
-import pandas as pd
 import QuantLib as ql
-from fastFE import bootstrap_curve, create_black_vol_curve, create_black_vol_surface
 from pydantic import Field, model_validator
 
 from . import conventions as cv
@@ -66,7 +63,8 @@ class ZeroCurve(CurveFactory):
 
 @register("curve", "bootstrap")
 class BootstrapCurve(CurveFactory):
-    description = "Bootstrapped from deposit / swap par quotes with fastFE currency conventions."
+    description = ("Bootstrapped from deposit / par swap quotes with the currency's conventions "
+                   "(annual 30/360 fixed vs 6M floating swaps). Curve day count Actual365Fixed.")
 
     class Spec(SpecModel):
         currency: Literal["USD", "EUR", "JPY", "GBP", "TWD"] = "USD"
@@ -83,15 +81,29 @@ class BootstrapCurve(CurveFactory):
 
     @staticmethod
     def build(spec, ref):
-        # fastFE column names differ per instrument: deposits use 'rates', swaps use 'rate'
-        dep = pd.DataFrame({"tenor": [q.tenor for q in spec.deposit],
-                            "rates": [q.rate for q in spec.deposit]}) if spec.deposit else None
-        swp = pd.DataFrame({"tenor": [q.tenor for q in spec.swap],
-                            "rate": [q.rate for q in spec.swap]}) if spec.swap else None
-        h = bootstrap_curve(ref, deposit=dep, swap=swp, method=spec.method, currency=spec.currency)
-        if isinstance(h, ql.YieldTermStructureHandle):
-            return h
-        return ql.YieldTermStructureHandle(h)
+        conv = cv.curve_conventions(spec.currency)
+        helpers = [ql.DepositRateHelper(ql.QuoteHandle(ql.SimpleQuote(q.rate)), cv.period(q.tenor),
+                                        conv.settlement_days, conv.calendar, conv.roll,
+                                        conv.end_of_month, conv.money_market_day_count)
+                   for q in spec.deposit]
+        index = conv.ibor_index()
+        helpers += [ql.SwapRateHelper(ql.QuoteHandle(ql.SimpleQuote(q.rate)), cv.period(q.tenor),
+                                      conv.calendar, conv.fixed_frequency, conv.roll,
+                                      conv.fixed_day_count, index)
+                    for q in spec.swap]
+        curve = _PIECEWISE[spec.method](ref, helpers, ql.Actual365Fixed())
+        curve.enableExtrapolation()
+        return ql.YieldTermStructureHandle(curve)
+
+
+_PIECEWISE = {
+    "logLinearDiscount": ql.PiecewiseLogLinearDiscount,
+    "logCubicDiscount": ql.PiecewiseLogCubicDiscount,
+    "linearZero": ql.PiecewiseLinearZero,
+    "cubicZero": ql.PiecewiseCubicZero,
+    "linearForward": ql.PiecewiseLinearForward,
+    "splineCubicDiscount": ql.PiecewiseSplineCubicDiscount,
+}
 
 
 def simulation_curve(h: ql.YieldTermStructureHandle, ref: ql.Date, horizon: ql.Date):
@@ -150,7 +162,9 @@ class TermVol(VolFactory):
 
     @staticmethod
     def build(spec, ref, dc, spot, cal):
-        return create_black_vol_curve(pd.Series(spec.vols, index=spec.tenors), ref, dc)
+        ts = ql.BlackVarianceCurve(ref, [ref + cv.period(t) for t in spec.tenors], list(spec.vols), dc)
+        ts.enableExtrapolation()
+        return ql.BlackVolTermStructureHandle(ts)
 
     @staticmethod
     def max_tenor(spec):
@@ -187,36 +201,27 @@ class SurfaceVol(VolFactory):
 
     @classmethod
     def build(cls, spec, ref, dc, spot, cal):
-        if spec.interpolation == "bilinear":
-            # fastFE layout: index = strikes, columns = tenors
-            df = pd.DataFrame([list(col) for col in zip(*spec.vols)],
-                              index=cls.absolute_strikes(spec, spot), columns=spec.tenors)
-            return create_black_vol_surface(df, ref, dc, cal)
-        # same construction as fastFE.create_black_vol_surface, which does not expose the
-        # interpolation choice
         expiries = [ref + cv.period(t) for t in spec.tenors]
         strikes = cls.absolute_strikes(spec, spot)
         m = ql.Matrix(len(strikes), len(expiries))
         for i in range(len(strikes)):
             for j in range(len(expiries)):
                 m[i][j] = spec.vols[j][i]
-        # constant extrapolation outside the quoted strikes: bicubic extrapolation of the
-        # wings otherwise produces negative Dupire local variance
+        # constant extrapolation outside the quoted strikes: extrapolating the wings otherwise
+        # produces negative Dupire local variance
         surf = ql.BlackVarianceSurface(ref, cal, expiries, strikes, m, dc,
                                        ql.BlackVarianceSurface.ConstantExtrapolation,
                                        ql.BlackVarianceSurface.ConstantExtrapolation)
-        surf.setInterpolation("bicubic")
+        surf.setInterpolation(spec.interpolation)
         surf.enableExtrapolation()
         return ql.BlackVolTermStructureHandle(surf)
 
     @classmethod
-    def calibration_quotes(cls, spec, spot) -> pd.DataFrame:
-        """Long-format quotes in the layout fastFE HestonModel.calibrate expects."""
-        rows = []
-        for i, t in enumerate(spec.tenors):
-            for j, k in enumerate(cls.absolute_strikes(spec, spot)):
-                rows.append({"expiration": t, "strike": k, "vol": spec.vols[i][j]})
-        return pd.DataFrame(rows)
+    def calibration_quotes(cls, spec, spot) -> list[tuple[ql.Period, float, float]]:
+        """Every quoted point as (expiry tenor, absolute strike, Black vol)."""
+        strikes = cls.absolute_strikes(spec, spot)
+        return [(cv.period(t), k, spec.vols[i][j])
+                for i, t in enumerate(spec.tenors) for j, k in enumerate(strikes)]
 
     @staticmethod
     def max_tenor(spec):

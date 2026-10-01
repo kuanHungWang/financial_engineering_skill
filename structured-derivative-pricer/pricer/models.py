@@ -2,8 +2,8 @@
 (underlying fixings, short-rate state) and provide discount factors, plus QuantLib analytic
 engines when a closed form exists.
 
-Process construction and Heston calibration come from fastFE / QuantLib. Path generation is
-done here rather than by fastFE's `monte_carlo_paths` because the engine needs:
+Processes, Heston calibration and analytic engines are QuantLib's. Black-Scholes path generation
+is done here, vectorised over paths, because the engine needs:
   * antithetic variates,
   * correlated Brownian drivers across several underlyings,
   * one refined time grid shared by every underlying, on the Actual365Fixed axis the curves
@@ -22,7 +22,6 @@ from dataclasses import dataclass, field
 import numpy as np
 import pandas as pd
 import QuantLib as ql
-from fastFE import BlackScholesMertonModel, HestonModel
 from pydantic import Field, model_validator
 
 from . import conventions as cv
@@ -322,7 +321,8 @@ class BlackScholes(ModelFactory):
                     "illegal_fraction": local_vol_health(u, discount, horizon_years), "floor": atm}
                 preps.append(black_scholes_stepper(u, discount, lv))
             else:
-                procs[name] = BlackScholesMertonModel(discount, u.dividend, u.vol, u.spot).process
+                procs[name] = ql.BlackScholesMertonProcess(ql.QuoteHandle(ql.SimpleQuote(u.spot)),
+                                                           u.dividend, discount, u.vol)
                 preps.append(black_scholes_stepper(u, discount))
         factor = correlation_factor(spec.correlation) if spec.correlation is not None else None
         return BuiltModel(
@@ -332,6 +332,30 @@ class BlackScholes(ModelFactory):
             european_engine=lambda name: ql.AnalyticEuropeanEngine(procs[name]),
             barrier_engine=lambda name: ql.AnalyticBarrierEngine(procs[name]), diagnostics=diag,
         )
+
+
+_HESTON_GUESS = dict(v0=0.02, kappa=0.6, theta=0.01, sigma=0.4, rho=-0.15)
+
+
+def calibrate_heston(discount, dividend, calendar, spot, quotes):
+    """Fit Heston to Black vol quotes [(expiry tenor, strike, vol)] by Levenberg-Marquardt on
+    QuantLib HestonModelHelpers (relative price errors, analytic engine).
+    Returns (HestonProcess with the fitted parameters, ql.HestonModel, RMS calibration error)."""
+    spot_h = ql.QuoteHandle(ql.SimpleQuote(spot))
+    model = ql.HestonModel(ql.HestonProcess(discount, dividend, spot_h, *_HESTON_GUESS.values()))
+    engine = ql.AnalyticHestonEngine(model)
+    helpers = []
+    for tenor, strike, vol in quotes:
+        h = ql.HestonModelHelper(tenor, calendar, spot, strike, ql.QuoteHandle(ql.SimpleQuote(vol)),
+                                 discount, dividend)
+        h.setPricingEngine(engine)
+        helpers.append(h)
+    model.calibrate(helpers, ql.LevenbergMarquardt(1e-8, 1e-8, 1e-8),
+                    ql.EndCriteria(500, 300, 1e-8, 1e-8, 1e-8))
+    process = ql.HestonProcess(discount, dividend, spot_h,
+                               model.v0(), model.kappa(), model.theta(), model.sigma(), model.rho())
+    rmse = float(np.sqrt(np.mean([h.calibrationError() ** 2 for h in helpers])))
+    return process, model, rmse
 
 
 class _HestonParams(SpecModel):
@@ -345,7 +369,8 @@ class _HestonParams(SpecModel):
 @register("model", "heston")
 class Heston(ModelFactory):
     description = ("Single-asset Heston stochastic vol with deterministic rates. Either give `params`, or "
-                   "omit them to calibrate (fastFE HestonModel.calibrate) to the underlying's vol surface. "
+                   "omit them to calibrate (Levenberg-Marquardt on QuantLib HestonModelHelpers) to every quote of "
+                   "the underlying's vol surface. "
                    "Analytic engine: European vanilla.")
     has_european_engine = True
     has_barrier_engine = False
@@ -377,13 +402,10 @@ class Heston(ModelFactory):
         u = und[spec.underlying]
         diag = {}
         if spec.params is None:
-            fe = HestonModel(discount, u.dividend, u.calendar)
-            fe.calibrate(u.vol_factory.calibration_quotes(u.vol_spec, u.spot), u.spot)
-            proc, m = fe.process, fe.model
+            proc, m, rmse = calibrate_heston(discount, u.dividend, u.calendar, u.spot,
+                                             u.vol_factory.calibration_quotes(u.vol_spec, u.spot))
             diag["calibrated_params"] = dict(v0=m.v0(), kappa=m.kappa(), theta=m.theta(), sigma=m.sigma(), rho=m.rho())
-            if getattr(fe, "calibration_detail", None) is not None:
-                err = fe.calibration_detail["calibrationError"]
-                diag["calibration_rmse"] = float(np.sqrt(np.mean(np.square(err))))
+            diag["calibration_rmse"] = rmse
         else:
             p = spec.params
             proc = ql.HestonProcess(discount, u.dividend, ql.QuoteHandle(ql.SimpleQuote(u.spot)),
