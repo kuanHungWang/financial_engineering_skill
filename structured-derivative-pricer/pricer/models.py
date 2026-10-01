@@ -189,21 +189,28 @@ def correlated_simulator(names, spots, preparers, factor=None):
     return simulate
 
 
-def _simulate_process(process, times, n_paths, seed, antithetic) -> np.ndarray:
-    """Generic QuantLib path generator (first factor = the asset)."""
+def _simulate_process(process, times, n_paths, seed, antithetic, all_states=False) -> np.ndarray:
+    """Generic QuantLib path generator. Returns the first state variable (the asset), shape
+    (len(times), n_paths), or with all_states every state variable, shape (size, len(times), n_paths)
+    (Heston: spot, variance)."""
     n_steps = len(times) - 1
     n_t = len(times)
-    out = np.empty((n_t, n_paths))
+    states = process.size() if all_states else 1
+    out = np.empty((states, n_t, n_paths))
     dim = process.factors()
     rsg = ql.GaussianRandomSequenceGenerator(
         ql.UniformRandomSequenceGenerator(dim * n_steps, ql.UniformRandomGenerator(seed)))
     gen = ql.GaussianMultiPathGenerator(process, list(times), rsg, False)
     step = 2 if antithetic else 1
+
+    def store(j, multipath):
+        for k in range(states):
+            out[k, :, j] = np.fromiter(multipath[k], float, n_t)
     for j in range(0, n_paths, step):
-        out[:, j] = np.fromiter(gen.next().value()[0], float, n_t)
+        store(j, gen.next().value())
         if antithetic:
-            out[:, j + 1] = np.fromiter(gen.antithetic().value()[0], float, n_t)
-    return out
+            store(j + 1, gen.antithetic().value())
+    return out if all_states else out[0]
 
 
 def build_underlying(name, eq, ref: ql.Date, discount: ql.YieldTermStructureHandle) -> UnderlyingData:
