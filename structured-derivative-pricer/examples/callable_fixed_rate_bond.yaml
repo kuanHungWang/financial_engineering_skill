@@ -1,0 +1,29 @@
+# 10Y callable fixed-rate bond, investor's view, notional 1,000,000.
+#   - 4.25% p.a. coupon paid semi-annually (30/360)
+#   - issuer call: at par on any coupon date from year 2 (2Y non-call) up to 6 months before maturity;
+#     the coupon of the call date is paid (settle_on_event_date: true, the default). Maturity is not a
+#     call date: the principal leg already redeems there (else par is paid twice)
+# Hull-White 1F: the call is an option on rates, so rates must be stochastic. The issuer calls when the
+# call price is below the regressed value of the remaining cashflows (Longstaff-Schwartz).
+valuation_date: 2026-09-28
+market_data: market/mock_market.yaml
+
+model: {type: hull_white, discount_curve: USD, mean_reversion: 0.03, volatility: 0.01}
+
+schedules:
+  semiannual: {type: generated, frequency: 6M, calendar: UnitedStates.GovernmentBond}
+  call_dates: {type: generated, frequency: 6M, start: 2Y, end: 90M, include_start: true,
+               calendar: UnitedStates.GovernmentBond}
+
+trade:
+  id: CALLABLE-10NC2
+  maturity: 10Y
+  legs:
+    - {id: coupons, type: fixed_leg, rate: 0.0425, notional: 1000000, schedule: semiannual,
+       day_count: Thirty360.BondBasis}
+    - {id: principal, type: fixed_amount, amount: 1000000, payment_date: maturity}
+  termination_events:
+    - {id: issuer_call, type: bermudan_call, observation: call_dates, exerciser: issuer,
+       exercise_price: 1000000}
+
+pricing: {num_paths: 20000, seed: 7}

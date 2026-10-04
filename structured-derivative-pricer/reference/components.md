@@ -145,6 +145,7 @@ cap: {effective_date: null, 2Y: 0.06}        # null = no cap / floor / bound in 
 | `knock_out` condition | on any leg | the cashflow is paid only if the barrier was **not** hit on or before its cut-off |
 | `knock_out` event | trade | **termination** on the first hit: later cashflows cancelled, optional rebate |
 | `target` event | trade | **TARN**: terminates on the payment date where accumulated coupons of `legs` reach `target` |
+| `bermudan_call` event | trade | **early exercise** (callable, puttable, cancellable, Bermudan option): one party may end the trade on each `observation` date, decided by Longstaff-Schwartz |
 
 - The **cut-off** of a cashflow is:
   - an option's expiry,
@@ -160,6 +161,36 @@ cap: {effective_date: null, 2Y: 0.06}        # null = no cap / floor / bound in 
     the trade's own principal leg pays.
   - `guaranteed: true`: if the target is never reached, the shortfall is paid at maturity.
 - `target` is a cash amount. Write `0.12 * notional` as a number (e.g. `120000`).
+
+### Bermudan exercise (`bermudan_call`)
+
+Use it for an optional early termination. The exercise is a choice someone makes, not a barrier.
+
+| field | meaning |
+|---|---|
+| `observation` | schedule of exercise dates. Use the dates after notice, and leave out the date the principal leg pays (usually maturity) |
+| `exerciser` | `issuer`: the party paying the holder may call or cancel. It exercises when that is **cheaper** than continuing (callable bond, cancellable note, swap cancellable by the counterparty). `holder`: the holder may put. It exercises when that is **worth more** than continuing (puttable bond, Bermudan option) |
+| `exercise_price` | **cash** the holder receives on exercise: `1000000` for a call at par on a 1,000,000 note, `0` for a free cancellation. Takes a number, one value per schedule date, or `{date: value}` steps (last key on or before the date). `null` means no exercise on that date |
+| `exercise_option` | adds an option's intrinsic value on exercise, `{underlying \| observable, option_type, strike, strike_mode, notional}` with the same units as `option_payoff`. A Bermudan option is `exercise_price: 0` + `exercise_option` |
+| `regressors` | observables or underlyings that drive the decision. Default: every model underlying, plus the short rate under `hull_white`. Name a swap rate for a cancellable swap, or the worst-of performance for a multi-asset note |
+| `degree` | polynomial degree of the regression (default 2) |
+| `settle_on_event_date` | the cashflows paid on the exercise date are still paid (default `true`: the coupon is paid, then the bond is called) |
+
+- On exercise, every later cashflow is cancelled, including those of other legs and other events' rebates.
+- Another termination event (autocall, TARN) that ends the trade first blocks exercise on that path. On the same
+  date, the other event wins.
+- **Model.** A call on a rate product needs `hull_white`, because the decision depends on rates. On an equity
+  model, rates are deterministic and only the equity drives the decision.
+- **One** `bermudan_call` per trade.
+- **The exercise rule.** It is fitted on `pricing.exercise_fit_paths` independent paths (default `num_paths`),
+  then applied to the pricing paths. The rule is slightly sub-optimal, so the price leans **against** the
+  exerciser:
+  - a holder-exercised option is a lower bound,
+  - a bond the issuer can call is valued slightly high for the holder.
+  `events.<id>.policy.in_sample_price` refits on the pricing paths. It errs in the other direction. A gap of more
+  than a few standard errors between the two means the regressors miss what drives the decision.
+- **Path counts.** Pricing costs about twice the simulation time. `exercise_fit_paths: 0` fits in sample, which
+  is faster but biased toward the exerciser.
 
 ## Conventions (read these before writing a spec)
 
@@ -210,6 +241,11 @@ cap: {effective_date: null, 2Y: 0.06}        # null = no cap / floor / bound in 
 | "the product terminates early if ≥ B% on any observation date" | event `knock_out` on that schedule |
 | "autocall: early redemption at par + coupon on observation date" | event `knock_out` + `rebate: notional`, `settle_on_event_date: true` |
 | "early redemption once total coupons reach T% (TARN)" | event `target`, `target: T% × notional`, `rebate: notional` |
+| "callable at par by the issuer on any coupon date after year 2" | event `bermudan_call`, `exerciser: issuer`, `exercise_price: notional`, schedule of call dates (needs `hull_white` for a rate product) |
+| "callable at 102 in year 3, 101 in year 4, par thereafter" | `bermudan_call` with `exercise_price` steps `{3Y: 1020000, 4Y: 1010000, 5Y: 1000000}` (cash) |
+| "puttable at par by the investor annually" | event `bermudan_call`, `exerciser: holder`, `exercise_price: notional` |
+| "swap cancellable by the counterparty / by us, no fee" | both legs + `bermudan_call` with `exercise_price: 0`, `exerciser: issuer` (they cancel) or `holder` (we cancel); `regressors: [<swap_rate>]` |
+| "Bermudan put, exercisable monthly" | `option_payoff` put at expiry + `bermudan_call` `exerciser: holder`, `exercise_price: 0`, `exercise_option` = the same put, on the dates before expiry |
 | "principal repaid at maturity" | leg `fixed_amount`, `amount: notional` |
 | "fixing 2 business days before payment" | schedule `offset` with `base: <payment schedule>`, `offset: -2D` |
 
@@ -227,6 +263,9 @@ cap: {effective_date: null, 2Y: 0.06}        # null = no cap / floor / bound in 
 | `dual_equity_range_accrual.yaml` | dual-index range accrual with kick-in | 2-asset local vol, two ranges, `knock_in` on the coupon leg |
 | `hybrid_fixed_then_range_accrual.yaml` | 10Y: fixed year 1, then rate range accrual with a stepping range | one `range_accrual`, per-period bounds, Hull-White |
 | `cms_inverse_floater_in_arrears.yaml` | 10Y: fixed year 1, then 5% − 0.8×CMS5Y collared 2–4%, in arrears | `fixed_leg` + `floating_leg` on split schedules, Hull-White |
+| `callable_fixed_rate_bond.yaml` | 10NC2 callable fixed-rate bond, semi-annual calls at par | `fixed_leg` + principal + `bermudan_call` (issuer), Hull-White |
+| `cancellable_swap.yaml` | 5Y receive-fixed swap, cancellable annually by the counterparty | `fixed_leg` + short `floating_leg` + `bermudan_call` (issuer, price 0, swap-rate regressor), Hull-White |
+| `bermudan_put.yaml` | 1Y Bermudan put on SPX, monthly exercise | `option_payoff` + `bermudan_call` (holder, `exercise_option`) |
 
 ## Models
 

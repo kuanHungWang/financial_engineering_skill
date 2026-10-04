@@ -28,11 +28,17 @@ class PricingSettings(SpecModel):
     steps_per_year: int = Field(
         52, ge=0, description="minimum simulation time steps per year (grid refinement between fixing dates)")
     max_memory_mb: int = Field(2000, description="abort before simulation if path storage would exceed this")
+    exercise_fit_paths: int | None = Field(
+        None, ge=0, le=2_000_000,
+        description="Bermudan exercise: paths of the independent simulation the Longstaff-Schwartz rule is fitted "
+                    "on (default num_paths); 0 fits on the pricing paths themselves (in sample, biased up)")
 
     @model_validator(mode="after")
     def _even_paths(self):
         if self.antithetic and self.num_paths % 2:
             raise ValueError("num_paths must be even when antithetic is true")
+        if self.antithetic and self.exercise_fit_paths and self.exercise_fit_paths % 2:
+            raise ValueError("exercise_fit_paths must be even when antithetic is true")
         return self
 
 

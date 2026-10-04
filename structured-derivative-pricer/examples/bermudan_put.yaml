@@ -1,0 +1,28 @@
+# 1Y Bermudan put on SPX, strike 100% of the initial level, exercisable at each month end, notional 1,000,000
+# (payoff = notional x max(1 - S/S0, 0)).
+#   - exercise on the 11 monthly dates before expiry: the holder receives the put's intrinsic value
+#     (exercise_price 0 + exercise_option); at expiry the European put leg pays if not exercised before
+# Longstaff-Schwartz regresses on the SPX level (the model state), on in-the-money paths only.
+valuation_date: 2026-09-28
+market_data: market/mock_market.yaml
+
+model: {type: black_scholes, underlying: SPX, discount_curve: USD}
+
+schedules:
+  monthly: {type: generated, frequency: 1M, end: 11M, calendar: UnitedStates.NYSE}
+
+trade:
+  id: BERM-PUT-SPX-1Y
+  maturity: 1Y
+  legs:
+    - {id: put_at_expiry, type: option_payoff, underlying: SPX, option_type: put, strike: 1.0,
+       notional: 1000000}
+  termination_events:
+    - id: early_exercise
+      type: bermudan_call
+      observation: monthly
+      exerciser: holder
+      exercise_price: 0
+      exercise_option: {underlying: SPX, option_type: put, strike: 1.0, notional: 1000000}
+
+pricing: {num_paths: 40000, seed: 5}

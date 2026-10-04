@@ -1,6 +1,6 @@
 ---
 name: structured-derivative-pricer
-description: Price exotic and structured derivatives (barrier options, EKIAKO, autocallables, equity-linked notes, fixed/floating/SOFR-compounded legs, inverse floaters, range accruals on equities, rates, CMS spreads or baskets, TARNs, kick-in coupons) by writing a declarative YAML trade spec that a pre-built QuantLib engine validates and prices by Monte Carlo, or in closed form when QuantLib has one. Use when the user gives a term sheet or product description and asks for a fair value, NPV, MTM, or pricing model, including "price this note", "value this barrier option", "build a pricing model for...", "結構型商品評價", "公平價值". You write the spec, never pricing code.
+description: Price exotic and structured derivatives (barrier options, EKIAKO, autocallables, callable / puttable bonds, cancellable swaps, Bermudan options, equity-linked notes, fixed/floating/SOFR-compounded legs, inverse floaters, range accruals on equities, rates, CMS spreads or baskets, TARNs, kick-in coupons) by writing a declarative YAML trade spec that a pre-built QuantLib engine validates and prices by Monte Carlo, or in closed form when QuantLib has one. Use when the user gives a term sheet or product description and asks for a fair value, NPV, MTM, or pricing model, including "price this note", "value this barrier option", "build a pricing model for...", "結構型商品評價", "公平價值". You write the spec, never pricing code.
 ---
 
 # Structured Derivative Pricer
@@ -17,7 +17,8 @@ curve ─▶ discount ─▶ underlying ─▶ model ─▶ scenario ─▶ obse
 
 Products are assembled from building blocks: **observables** (equity, term/swap/overnight rates, linear
 combinations, worst-of), **legs** (fixed, floating, range accrual, option, fixed amount) and **masks**
-(kick-in / knock-out conditions on a leg, knock-out termination and target (TARN) events on the trade).
+(kick-in / knock-out conditions on a leg, knock-out termination, target (TARN) and Bermudan exercise events
+on the trade).
 
 ## Setup (once per machine)
 
@@ -35,6 +36,11 @@ After that, run every command below as `$PY <skill_dir>/scripts/price.py ...`.
    anything. Two ambiguities matter most: whether a barrier is observed at expiry only or daily, and
    whether a level is a % of the initial fixing or an absolute price. For rate legs also pin down: fixing in
    advance or compounded in arrears, fixing lag / lockout, day counts, and the calendar of daily observations.
+   For a callable / puttable / cancellable product pin down:
+   - who holds the right (issuer or investor),
+   - the exercise dates after notice,
+   - the exercise price as cash,
+   - whether the coupon of the exercise date is still paid.
 2. **Map features to components** with [reference/components.md](reference/components.md), which
    covers the mapping table, the sign conventions, and worked product recipes. For exact field
    names, defaults and allowed values, run `price.py catalog [kind]`. The catalog is generated
@@ -83,7 +89,8 @@ After that, run every command below as `$PY <skill_dir>/scripts/price.py ...`.
 | `method`, `method_reason` | analytic (closed form, exact) or mc, and why no closed form matched |
 | `price`, `std_error`, `confidence_interval` | if `std_error` is too large relative to price, re-run with more paths |
 | `legs` | PV per leg. The signs follow `position`, from the holder's view |
-| `leg_diagnostics`, `events` | knock-in / knock-out / autocall probabilities. Sanity-check them against intuition |
+| `leg_diagnostics`, `events` | knock-in / knock-out / autocall / exercise probabilities. Sanity-check them against intuition |
+| `events.<id>.policy` | Bermudan exercise: `in_sample_price` should be within a few `std_error` of `price`. A larger gap means the regressors miss the exercise driver |
 | `expected_cashflows` | expected amount, DF and survival probability per payment date |
 | `cross_check` | when MC ran and a closed form also applies, `agrees` must be true |
 | `martingale_check` | `ok` must be true. It tests the simulated forward against the curve forward |
@@ -117,13 +124,15 @@ Legs:
 
 Masks:
 - `knock_in` (kick-in) and `knock_out` conditions on any leg,
-- trade-level `knock_out` (termination / autocall) and `target` (TARN) with rebate / guarantee.
+- trade-level `knock_out` (termination / autocall) and `target` (TARN) with rebate / guarantee,
+- trade-level `bermudan_call`: issuer call / holder put / cancellation / Bermudan option on a schedule, priced
+  by Longstaff-Schwartz (callable and puttable bonds, cancellable swaps, Bermudan options).
 
 Closed forms: European vanilla (BSM, Heston) and single continuous barrier (BSM).
 
 Not yet supported, so say so rather than approximating:
-- callable bonds and cancellable swaps in a trade spec (the Longstaff-Schwartz building block exists in
-  `pricer/exercise.py`, but no YAML component uses it yet),
+- more than one Bermudan exercise right per trade (e.g. both issuer call and holder put),
+- American (continuous) exercise; approximate it by a daily `bermudan_call` schedule only if the user agrees,
 - Hull-White calibration to swaptions,
 - equity plus stochastic-rate hybrids,
 - FX / quanto / multi-currency,
@@ -143,8 +152,8 @@ the catalog and the graph pick it up automatically. Add a regression test in `te
 closed form or a limiting case. Run the suite with `$PY -m pytest <skill_dir>/tests -q`.
 
 `pricer/exercise.py` holds model-agnostic early-termination blocks that work on (periods x paths) cashflow
-tables, for wiring Bermudan / callable / autocall features into components (see
-[reference/exercise.md](reference/exercise.md)):
+tables. The `bermudan_call` event (`pricer/bermudan.py`) runs `longstaff_schwartz` inside the engine's
+aggregation. See [reference/exercise.md](reference/exercise.md):
 - `longstaff_schwartz`: optimal holder or issuer exercise by least-squares regression,
 - `autocall`: termination on the first period an autocall mask holds,
 - `summarize`: expected cashflows per period, fair value per path, price with confidence interval.
