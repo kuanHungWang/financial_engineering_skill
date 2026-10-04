@@ -54,6 +54,23 @@ def _table(x, shape, name, dtype=float) -> np.ndarray:
     return np.broadcast_to(a, shape).astype(dtype, copy=True)
 
 
+def _shape(cashflows, *others) -> tuple:
+    """(T, N): T from `cashflows`, N from the widest input, so that any input given per period only ((T,) or
+    (T, 1), e.g. deterministic coupons) broadcasts against the path-wise ones."""
+    def arr(x):
+        return np.asarray(x.values if isinstance(x, (pd.DataFrame, pd.Series)) else x)
+    cf = arr(cashflows)
+    if cf.ndim not in (1, 2):
+        raise ValueError(f"cashflows: expected a (periods,) or (periods, paths) table, got shape {cf.shape}")
+    n = 1 if cf.ndim == 1 else cf.shape[1]
+    for x in others:
+        for a in (map(arr, x.values() if isinstance(x, dict) else x) if isinstance(x, (dict, list, tuple))
+                  else [arr(x)]):
+            if a.ndim >= 2:
+                n = max(n, a.shape[1])
+    return cf.shape[0], n
+
+
 def _observations(obs, shape) -> np.ndarray:
     """Regression state as (T, N, K): one (T, N) table, a (T, N, K) array, or a list / dict of (T, N) tables
     (a dict's keys name the factors, e.g. {"SPX": spx_paths, "rate": short_rate})."""
@@ -187,11 +204,9 @@ def longstaff_schwartz(cashflows, exercise_payoff, forward_df, observations, *,
     Returns a TerminationResult; event = the exercise mask, diagnostics["exercise_probability"] per period.
     """
     index = _index_of(cashflows, exercise_payoff, forward_df)
-    cf = np.asarray(cashflows.values if isinstance(cashflows, pd.DataFrame) else cashflows, dtype=float)
-    if cf.ndim == 1:
-        cf = cf[:, None]
-    shape = cf.shape
+    shape = _shape(cashflows, exercise_payoff, forward_df, observations)
     t_n, n = shape
+    cf = _table(cashflows, shape, "cashflows")
     payoff = _table(exercise_payoff, shape, "exercise_payoff")
     fdf = _table(forward_df, shape, "forward_df")
     x = _observations(observations, shape)
@@ -248,10 +263,8 @@ def autocall(cashflows, autocall_mask, autocall_cashflows, forward_df=1.0, *,
     Returns a TerminationResult; event = the autocall mask actually triggered, survival_probability per period.
     """
     index = _index_of(cashflows, autocall_mask, autocall_cashflows, forward_df)
-    cf = np.asarray(cashflows.values if isinstance(cashflows, pd.DataFrame) else cashflows, dtype=float)
-    if cf.ndim == 1:
-        cf = cf[:, None]
-    shape = cf.shape
+    shape = _shape(cashflows, autocall_mask, autocall_cashflows, forward_df)
+    cf = _table(cashflows, shape, "cashflows")
     mask = _table(autocall_mask, shape, "autocall_mask", dtype=bool)
     amount = _table(autocall_cashflows, shape, "autocall_cashflows")
     fdf = _table(forward_df, shape, "forward_df")
