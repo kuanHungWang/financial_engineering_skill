@@ -11,6 +11,7 @@ Graph (analytic):  curve -> underlying -> model -> price
 """
 from __future__ import annotations
 
+import bisect
 import contextlib
 import datetime as dt
 import math
@@ -26,6 +27,7 @@ import yaml
 from pydantic import ValidationError
 
 from . import analytic as _analytic  # noqa: F401  (registers analytic pricers)
+from . import bermudan as _bermudan  # noqa: F401  (registers bermudan_call)
 from . import conventions as cv
 from . import coupons as _coupons  # noqa: F401  (registers coupon legs)
 from . import market as _market  # noqa: F401  (registers curves, vols)
@@ -33,6 +35,7 @@ from . import observables as obs
 from . import rates as _rates  # noqa: F401  (registers hull_white)
 from . import registry
 from .issues import Report
+from .exercise import longstaff_schwartz
 from .market import simulation_curve
 from .models import build_underlying
 from .observables import RATES
@@ -314,6 +317,10 @@ def build_plan(raw: dict, base_dir: Path | str = ".") -> Plan:
         return plan
     for cls, spec, path in legs + events:
         cls.validate(spec, v, path)
+    exercise = [path for cls, _, path in events if getattr(cls, "exercise", False)]
+    for path in exercise[1:]:
+        rep.error(path, "only one Bermudan exercise event per trade is supported",
+                  f"first one at {exercise[0]}")
     if not rep.ok:
         return plan
     trade = ParsedTrade(legs, conds, events, minfo)
@@ -358,7 +365,8 @@ def build_plan(raw: dict, base_dir: Path | str = ".") -> Plan:
         eq = [ds for k, ds in plan.sim_dates.items() if k != RATES]
         n_eq = _grid_size(set().union(*eq) | {val}, settings.steps_per_year) if eq else 0
         n_rates = len(set(plan.sim_dates.get(RATES, [])) | pays) + 1 if mcls.stochastic_rates else 0
-        plan.memory_mb = (2.2 * n_eq * len(unds) + 2.2 * n_rates) * settings.num_paths * 8 / 2**20
+        held = settings.num_paths + (_fit_paths(settings) if _exercise_event(trade) else 0)   # + fit paths
+        plan.memory_mb = (2.2 * n_eq * len(unds) + 2.2 * n_rates) * held * 8 / 2**20
         if plan.memory_mb > settings.max_memory_mb:
             rep.error("pricing.num_paths",
                       f"path storage ~{plan.memory_mb:,.0f} MB exceeds max_memory_mb {settings.max_memory_mb}",
@@ -493,7 +501,7 @@ def _build_graph(plan: Plan):
                 add(key, deps, f"{cls.type_name} observable", lambda r: None)
             return key
 
-        pctx = lambda r: PCtx(v, r["fixings"], s.num_paths)  # noqa: E731
+        pctx = lambda r: PCtx(v, r["fixings"], r["fixings"].n_paths)  # noqa: E731
         for cls, spec, path in trade.legs:
             used = {getattr(spec, "schedule", None)} | {c.observation for _, c, _ in trade.conditions[path]}
             deps = ["fixings"] + [f"schedule:{x}" for x in sched_refs if x in used] + \
@@ -504,15 +512,25 @@ def _build_graph(plan: Plan):
             lids = list(spec.legs) if getattr(cls, "leg_dependent", False) else []
             deps = ["fixings"] + ([f"schedule:{spec.observation}"] if getattr(spec, "observation", None) in sched_refs
                                   else []) + [obs_node(o) for o in sorted(_obs_refs(spec))] + [f"leg:{x}" for x in lids]
-            add(f"event:{spec.id}", deps, f"{cls.type_name} termination dates",
+            add(f"event:{spec.id}", deps, f"{cls.type_name} " + ("exercise amounts and regression state"
+                                                                  if getattr(cls, "exercise", False)
+                                                                  else "termination dates"),
                 lambda r, cls=cls, spec=spec, path=path, lids=lids:
                 cls.evaluate(spec, pctx(r), path, {x: r[f"leg:{x}"] for x in lids}))
         add("discount_factors", ["fixings"],
             f"{'path-wise' if mi.cls.stochastic_rates else 'deterministic'} DFs on {len(plan.pay_dates)} payment dates",
             lambda r: r["fixings"].discount(plan.pay_dates))
-        add("price", [f"leg:{sp.id}" for _, sp, _ in trade.legs] +
-            [f"event:{sp.id}" for _, sp, _ in trade.events] + ["discount_factors"],
-            "apply terminations, discount, average paths", lambda r: _aggregate_mc(plan, r))
+        price_deps = [f"leg:{sp.id}" for _, sp, _ in trade.legs] + \
+            [f"event:{sp.id}" for _, sp, _ in trade.events] + ["discount_factors"]
+        if _exercise_event(trade):
+            n_fit = _fit_paths(s)
+            add("exercise_policy", ["model"] + price_deps,
+                f"fit Longstaff-Schwartz exercise regressions on {n_fit} independent paths (seed {_fit_seed(s)})"
+                if n_fit else "fit Longstaff-Schwartz exercise regressions on the pricing paths (in sample)",
+                lambda r: _fit_exercise(plan, r))
+            price_deps.append("exercise_policy")
+        add("price", price_deps, "apply terminations and exercise, discount, average paths",
+            lambda r: _aggregate_mc(plan, r))
         if plan.cross_check:
             add("analytic_check", ["model"], f"{plan.analytic_cls.type_name} closed form for cross-check",
                 lambda r: plan.analytic_cls.price(trade, r["model"], v))
@@ -593,72 +611,217 @@ def _run(plan: Plan) -> dict:
     return out
 
 
+FIT_SEED_OFFSET = 1_000_003      # seed of the independent exercise-fit paths: pricing.seed + this
+
+
+def _exercise_event(trade):
+    for cls, spec, _ in trade.events:
+        if getattr(cls, "exercise", False):
+            return spec
+    return None
+
+
+def _fit_paths(s) -> int:
+    return s.num_paths if s.exercise_fit_paths is None else s.exercise_fit_paths
+
+
+def _fit_seed(s) -> int:
+    return s.seed + FIT_SEED_OFFSET
+
+
+@dataclass
+class _Flows:
+    """Every cashflow of the trade after the (non-exercise) termination events, path by path."""
+    rows: list            # [(kind, owner id, date, amounts (n,))]; kind: leg | rebate | conditional | exercise
+    first: np.ndarray     # first termination date per path (NaT if none)
+    settle: np.ndarray    # that termination pays the cashflows on its date
+    owner: np.ndarray     # index into events of the terminating event, -1 if none
+    events: list          # [(spec, EventResult)] for the non-exercise events
+    n: int
+
+    def alive(self, d):
+        d64 = np.datetime64(d, "D")
+        return np.isnat(self.first) | (self.first > d64) | ((self.first == d64) & self.settle)
+
+
+def _flows(plan: Plan, r) -> _Flows:
+    trade = plan.trade
+    n = r["fixings"].n_paths
+    first = np.full(n, np.datetime64("NaT"), dtype="datetime64[D]")
+    settle = np.zeros(n, dtype=bool)
+    owner = np.full(n, -1)
+    ev_res = []
+    for _, spec, _ in [e for e in trade.events if not getattr(e[0], "exercise", False)]:
+        er = r[f"event:{spec.id}"]
+        i = len(ev_res)
+        ev_res.append((spec, er))
+        better = ~np.isnat(er.hit_date) & (np.isnat(first) | (er.hit_date < first))
+        first = np.where(better, er.hit_date, first)
+        settle = np.where(better, er.settle_on_event_date, settle)
+        owner = np.where(better, i, owner)
+    f = _Flows([], first, settle, owner, ev_res, n)
+    for _, spec, _ in trade.legs:
+        lr = r[f"leg:{spec.id}"]
+        scales = [(i, er) for i, (_, er) in enumerate(ev_res) if spec.id in er.leg_scale]
+        for row, d in enumerate(lr.amounts.index):
+            cf = lr.amounts.iloc[row].values * f.alive(d)
+            d64 = np.datetime64(d, "D")
+            for i, er in scales:
+                cf = np.where((owner == i) & (er.hit_date == d64), cf * er.leg_scale[spec.id], cf)
+            f.rows.append(("leg", spec.id, d, cf))
+    for i, (spec, er) in enumerate(ev_res):
+        if er.rebate is not None:
+            for row, d in enumerate(er.rebate.index):
+                f.rows.append(("rebate", spec.id, d, er.rebate.iloc[row].values * (owner == i)))
+        if er.conditional is not None:
+            for row, d in enumerate(er.conditional.index):
+                f.rows.append(("conditional", spec.id, d, er.conditional.iloc[row].values * f.alive(d)))
+    return f
+
+
+def _exercise_problem(plan: Plan, r, f: _Flows):
+    """Longstaff-Schwartz tables for the Bermudan event: one row per exercise date e_k plus a final row for what
+    is paid after the last one. A cashflow belongs to the first row whose exercise would not cancel it (on e_k
+    itself when settled on the event date), valued in that row's money: PV / D(0, e_k). Forward discount factors
+    D(0, e_k) / D(0, e_{k-1}) then make every row's value path-wise exact under stochastic rates too."""
+    spec = _exercise_event(plan.trade)
+    inp = r[f"event:{spec.id}"]
+    dfs = r["discount_factors"]
+    dfv = {d: np.broadcast_to(dfs[i], (f.n,)) for i, d in enumerate(plan.pay_dates)}
+    ex = inp.dates
+    k_n = len(ex)
+    pick = bisect.bisect_left if spec.settle_on_event_date else bisect.bisect_right
+    pv = np.zeros((k_n + 1, f.n))
+    last = max([d for _, _, d, _ in f.rows] + [ex[-1]])
+    for _, _, d, cf in f.rows:
+        pv[pick(ex, d)] += cf * dfv[d]
+    disc = np.vstack([dfv[e] for e in ex] + [dfv[last]])
+    fdf = disc / np.vstack([np.ones(f.n), disc[:-1]])
+    payoff = np.vstack([inp.amount, np.full((1, f.n), np.nan)])
+    ex64 = np.array(ex, dtype="datetime64[D]")
+    blocked = ~np.isnat(f.first)[None, :] & (f.first[None, :] <= ex64[:, None])   # already terminated
+    payoff[:k_n][blocked] = np.nan
+    state = np.concatenate([inp.state, inp.state[-1:]], axis=0)
+    return spec, inp, (pv / disc, payoff, fdf, state)
+
+
+def _solve_exercise(spec, tables, policy=None):
+    cf, payoff, fdf, state = tables
+    return longstaff_schwartz(cf, payoff, fdf, state, exerciser=spec.exerciser, settle_on_event_date=True,
+                              degree=spec.degree, itm_only=spec.exercise_option is not None, policy=policy)
+
+
+def _resimulate(plan: Plan, r, n, seed) -> dict:
+    """Legs, events and discount factors again on an independent set of paths."""
+    s = plan.input.pricing
+    rr = {k: x for k, x in r.items() if k == "model" or k.startswith(("curve:", "discount:", "underlying:",
+                                                                         "schedule:"))}
+    rr["fixings"] = r["model"].simulate(plan.sim_dates, plan.pay_dates, n, seed, s.antithetic, s.steps_per_year)
+
+    def ev(key):
+        if key not in rr:
+            node = plan.nodes[key]
+            for d in node.deps:
+                ev(d)
+            rr[key] = node.fn(rr)
+    for key in plan.nodes:
+        if key.startswith(("observable:", "leg:", "event:")) or key == "discount_factors":
+            ev(key)
+    return rr
+
+
+def _fit_exercise(plan: Plan, r) -> dict:
+    s = plan.input.pricing
+    n_fit = _fit_paths(s)
+    rr = _resimulate(plan, r, n_fit, _fit_seed(s)) if n_fit else r
+    spec, _, tables = _exercise_problem(plan, rr, _flows(plan, rr))
+    res = _solve_exercise(spec, tables)
+    return {"policy": res.diagnostics["policy"], "fit_paths": n_fit or s.num_paths,
+            "fit_seed": _fit_seed(s) if n_fit else s.seed, "in_sample": not n_fit}
+
+
+def _apply_exercise(plan: Plan, r, f: _Flows):
+    """Run the fitted exercise rule on the pricing paths; cancel what exercise cancels, add exercise payments.
+    Returns (exercise date per path, settle flag, diagnostics)."""
+    spec, inp, tables = _exercise_problem(plan, r, f)
+    fit = r["exercise_policy"]
+    res = _solve_exercise(spec, tables, None if fit["in_sample"] else fit["policy"])
+    ex64 = np.array(inp.dates, dtype="datetime64[D]")
+    hit = res.event[:-1]
+    ex_date = np.where(hit.any(axis=0), ex64[hit.argmax(axis=0)], np.datetime64("NaT"))
+    settle = spec.settle_on_event_date
+    for j, (kind, oid, d, cf) in enumerate(f.rows):
+        d64 = np.datetime64(d, "D")
+        f.rows[j] = (kind, oid, d, cf * (np.isnat(ex_date) | (d64 < ex_date) | ((d64 == ex_date) & settle)))
+    for k, d in enumerate(inp.dates):
+        f.rows.append(("exercise", spec.id, d, inp.amount[k] * hit[k]))
+    any_ex = ~np.isnat(ex_date)
+    diag = {"exerciser": spec.exerciser, "exercise_probability": float(any_ex.mean()),
+            "exercise_probability_by_date": {d.isoformat(): round(float(p), 6)
+                                             for d, p in zip(inp.dates, hit.mean(axis=1)) if p > 0},
+            "first_termination_probability": float(any_ex.mean())}
+    if any_ex.any():
+        t = (ex_date[any_ex] - np.datetime64(plan.input.valuation_date)).astype(float) / 365.0
+        diag["expected_years_to_exercise_given_exercise"] = float(t.mean())
+    diag["policy"] = {"fit_paths": fit["fit_paths"], "fit_seed": fit["fit_seed"], "in_sample": fit["in_sample"],
+                      "regressors": list(spec.regressors) or "model state", "degree": spec.degree}
+    if not fit["in_sample"]:
+        # the in-sample price is biased up for the exerciser; a large gap means the regression is too weak
+        diag["policy"]["in_sample_price"] = float(_solve_exercise(spec, tables).discounted.sum(axis=0).mean())
+    return ex_date, settle, diag
+
+
 def _aggregate_mc(plan: Plan, r) -> dict:
     s = plan.input.pricing
     trade = plan.trade
     n = s.num_paths
     dfs = r["discount_factors"]                              # (len(pay_dates), n or 1)
     dfv = {d: dfs[i] for i, d in enumerate(plan.pay_dates)}
-
-    # first termination per path
-    first = np.full(n, np.datetime64("NaT"), dtype="datetime64[D]")
-    settle = np.zeros(n, dtype=bool)
-    owner = np.full(n, -1)
-    ev_res = []
-    for i, (_, spec, _) in enumerate(trade.events):
-        er = r[f"event:{spec.id}"]
-        ev_res.append((spec, er))
-        better = ~np.isnat(er.hit_date) & (np.isnat(first) | (er.hit_date < first))
-        first = np.where(better, er.hit_date, first)
-        settle = np.where(better, er.settle_on_event_date, settle)
-        owner = np.where(better, i, owner)
+    f = _flows(plan, r)
+    ex_spec = _exercise_event(trade)
+    ex_date = np.full(n, np.datetime64("NaT"), dtype="datetime64[D]")
+    ex_settle, ex_diag = True, None
+    if ex_spec is not None:
+        ex_date, ex_settle, ex_diag = _apply_exercise(plan, r, f)
 
     def alive(d):
         d64 = np.datetime64(d, "D")
-        return np.isnat(first) | (first > d64) | ((first == d64) & settle)
+        return f.alive(d) & (np.isnat(ex_date) | (d64 < ex_date) | ((d64 == ex_date) & ex_settle))
 
     table = {}                                               # date -> [sum of mean cf, sum of mean pv]
-
-    def book(d, cf):
-        pv = cf * dfv[d]
+    pv = np.zeros(n)
+    by_owner = {}                                            # (kind, id) -> pv per path
+    for kind, oid, d, cf in f.rows:
+        p = cf * dfv[d]
         t = table.setdefault(d, [0.0, 0.0])
         t[0] += float(cf.mean())
-        t[1] += float(pv.mean())
-        return pv
+        t[1] += float(p.mean())
+        pv += p
+        key = (kind, oid)
+        by_owner[key] = by_owner.get(key, 0.0) + p
 
-    pv = np.zeros(n)
+    def owner_pv(kind, oid):
+        return float(np.mean(by_owner.get((kind, oid), 0.0)))
+
     legs_pv, legs_diag = {}, {}
     for _, spec, _ in trade.legs:
+        legs_pv[spec.id] = owner_pv("leg", spec.id)
         lr = r[f"leg:{spec.id}"]
-        scales = [(i, er) for i, (_, er) in enumerate(ev_res) if spec.id in er.leg_scale]
-        lpv = np.zeros(n)
-        for row, d in enumerate(lr.amounts.index):
-            cf = lr.amounts.iloc[row].values * alive(d)
-            d64 = np.datetime64(d, "D")
-            for i, er in scales:
-                cf = np.where((owner == i) & (er.hit_date == d64), cf * er.leg_scale[spec.id], cf)
-            lpv += book(d, cf)
-        pv += lpv
-        legs_pv[spec.id] = float(lpv.mean())
         if lr.diagnostics:
             legs_diag[spec.id] = lr.diagnostics
     events_out = {}
-    for i, (spec, er) in enumerate(ev_res):
+    for i, (spec, er) in enumerate(f.events):
         d = dict(er.diagnostics)
-        d["first_termination_probability"] = float((owner == i).mean())
+        d["first_termination_probability"] = float(
+            ((f.owner == i) & (np.isnat(ex_date) | (f.first < ex_date))).mean())
         if er.rebate is not None:
-            rpv = np.zeros(n)
-            for row, dd in enumerate(er.rebate.index):
-                rpv += book(dd, er.rebate.iloc[row].values * (owner == i))
-            pv += rpv
-            d["rebate_pv"] = float(rpv.mean())
+            d["rebate_pv"] = owner_pv("rebate", spec.id)
         if er.conditional is not None:
-            cpv = np.zeros(n)
-            for row, dd in enumerate(er.conditional.index):
-                cpv += book(dd, er.conditional.iloc[row].values * alive(dd))
-            pv += cpv
-            d["conditional_payment_pv"] = float(cpv.mean())
+            d["conditional_payment_pv"] = owner_pv("conditional", spec.id)
         events_out[spec.id] = d
+    if ex_spec is not None:
+        ex_diag["exercise_payment_pv"] = owner_pv("exercise", ex_spec.id)
+        events_out[ex_spec.id] = ex_diag
 
     mean = float(pv.mean())
     samples = (pv[0::2] + pv[1::2]) / 2 if s.antithetic else pv

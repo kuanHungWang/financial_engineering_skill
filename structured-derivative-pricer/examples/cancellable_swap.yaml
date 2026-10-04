@@ -1,0 +1,40 @@
+# 5Y cancellable swap, from the view of the party that receives fixed, notional 10,000,000.
+#   - receive 3.9% fixed annually (30/360), pay USD 3M term rate quarterly (Act/360), fixed in advance
+#   - the fixed payer may cancel the swap on any annual date from year 1, at no cost (exercise_price 0):
+#     the counterparty holds the option, so for us it is an issuer-style exercise
+#   - the coupons of the cancellation date are still exchanged
+# Hull-White 1F. The exercise rule regresses on the 5Y swap rate (an observable) instead of the
+# short-rate state, which is the natural driver of a cancellation decision.
+valuation_date: 2026-09-28
+market_data: market/mock_market.yaml
+
+model: {type: hull_white, discount_curve: USD, mean_reversion: 0.03, volatility: 0.01}
+
+observables:
+  L3M:
+    type: term_rate
+    curve: USD
+    tenor: 3M
+    calendar: UnitedStates.GovernmentBond
+    history: {2026-09-24: 0.0426}   # first period's fixing, 2 business days before the start (mock value)
+  SWAP5Y: {type: swap_rate, curve: USD, tenor: 5Y, fixed_frequency: 1Y, calendar: UnitedStates.GovernmentBond}
+
+schedules:
+  annual: {type: generated, frequency: 1Y, calendar: UnitedStates.GovernmentBond}
+  quarterly: {type: generated, frequency: 3M, calendar: UnitedStates.GovernmentBond}
+  cancel_dates: {type: generated, frequency: 1Y, end: 4Y, calendar: UnitedStates.GovernmentBond}
+
+trade:
+  id: CANCELLABLE-SWAP-5Y
+  maturity: 5Y
+  legs:
+    - {id: fixed, type: fixed_leg, rate: 0.039, notional: 10000000, schedule: annual,
+       day_count: Thirty360.BondBasis}
+    - {id: floating, type: floating_leg, index: L3M, fixing: in_advance, fixing_lag: 2,
+       fixing_calendar: UnitedStates.GovernmentBond, notional: 10000000, schedule: quarterly,
+       day_count: Actual360, position: short}
+  termination_events:
+    - {id: cancel, type: bermudan_call, observation: cancel_dates, exerciser: issuer, exercise_price: 0,
+       regressors: [SWAP5Y]}
+
+pricing: {num_paths: 20000, seed: 11}

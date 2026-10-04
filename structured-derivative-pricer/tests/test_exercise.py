@@ -207,6 +207,27 @@ def test_autocall_never_triggered_is_identity():
     assert np.allclose(ac.discount, 1.0)
 
 
+def test_per_period_cashflows_broadcast_against_path_tables():
+    """Deterministic cashflows given per period (T,) or (T, 1) broadcast against (T, N) payoffs, masks, state."""
+    n = 50
+    cf = np.array([1.0, 1.0, 1.0, 101.0])
+    rng = np.random.default_rng(3)
+    payoff, state = rng.uniform(95, 105, (4, n)), rng.normal(size=(4, n))
+    payoff[-1] = np.nan
+    full = longstaff_schwartz(np.repeat(cf[:, None], n, axis=1), payoff, 0.99, state, exerciser="issuer")
+    for c in (cf, cf[:, None]):
+        res = longstaff_schwartz(c, payoff, 0.99, state, exerciser="issuer")
+        assert res.cashflows.shape == (4, n) and np.array_equal(res.event, full.event)
+        assert np.allclose(res.cashflows, full.cashflows)
+    res = longstaff_schwartz(cf, payoff, 0.99, {"x": state, "y": state ** 2}, exerciser="issuer")
+    assert res.cashflows.shape == (4, n)
+    mask = rng.random((4, n)) < 0.3
+    ac = autocall(cf, mask, 100.0)
+    assert np.allclose(ac.cashflows, autocall(np.repeat(cf[:, None], n, axis=1), mask, 100.0).cashflows)
+    with pytest.raises(ValueError, match="cashflows"):
+        autocall(np.ones((4, 3)), mask, 100.0)
+
+
 # ------------------------------------------------------------------ summarizer
 def test_summarize_raw_table():
     rng = np.random.default_rng(4)

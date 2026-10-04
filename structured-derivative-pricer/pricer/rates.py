@@ -49,6 +49,10 @@ class HullWhitePaths:
             raise KeyError(f"Hull-White state was not simulated on {d} (engine requirement missing)")
         return arr[self.row[d]]
 
+    def state(self, dates):
+        """Short-rate factor x(t) per path: (len(dates), n). r(t) = x(t) + phi(t) with phi deterministic."""
+        return np.array([self._state(d, self.x) for d in dates])
+
     def deflator(self, dates):
         """D(0,t) / P(0,t) per path: (len(dates), n)."""
         t = np.array([self.time(d) for d in dates])

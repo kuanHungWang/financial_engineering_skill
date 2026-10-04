@@ -1,7 +1,8 @@
 # Early termination blocks: Longstaff-Schwartz, autocall, summarizer
 
 `pricer/exercise.py` works on simulated cashflow tables and does not depend on the model. It is a developer
-building block. Trade specs cannot use it yet.
+building block. In a trade spec, use the `bermudan_call` event, which runs `longstaff_schwartz` inside the engine
+(see "In the engine" below and `reference/components.md`).
 
 ## Table layout
 
@@ -79,6 +80,22 @@ Arguments:
 - **`antithetic`.** Use it when paths come in (2k, 2k+1) antithetic pairs. The standard error is then computed from
   the pair averages, as the engine does.
 
+## In the engine (`bermudan_call`)
+
+`engine._aggregate_mc` works in these steps:
+
+1. **Collect cashflows.** Every leg cashflow, rebate and conditional payment is gathered after the other
+   termination events. The event node (`pricer/bermudan.py`) supplies the exercise amount and the regression
+   state on each exercise date.
+2. **Build the exercise tables.** `_exercise_problem` builds one row per exercise date, plus a final row.
+   - A cashflow goes into the first row whose exercise would not cancel it.
+   - Each row is valued in its own money, as Σ D(0, s) CF_s / D(0, e_k), with forward factors D(0, e_k) / D(0, e_{k−1}).
+   - Exercise is blocked on paths that another event has already terminated.
+3. **Fit the exercise rule.** The `exercise_policy` graph node fits the regressions on an independent simulation:
+   `pricing.exercise_fit_paths` paths, with seed `pricing.seed + 1000003`.
+4. **Apply the rule.** `_apply_exercise` applies the fitted rule to the pricing paths. It cancels later cashflows
+   and books the exercise payments.
+
 ## Tests
 
 `tests/test_exercise.py` covers:
@@ -88,3 +105,10 @@ Arguments:
 - **Deterministic callable bond.** The price is exact.
 - **Vasicek callable bond.** Bounds are checked.
 - **Autocall and summarizer.** These are checked against hand-computed tables.
+
+`tests/test_bermudan.py` covers the engine event:
+- **Callable bond.** The price is checked against QuantLib's Hull-White tree engine.
+- **Bermudan put.** The price is checked against QuantLib's finite-difference engine.
+- **Limiting cases.** These include an exercise nobody takes and an autocall that ends every path before the
+  first call.
+- **Supporting checks.** Validation, per-date exercise prices, and the three examples.
