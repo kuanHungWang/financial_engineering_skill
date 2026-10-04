@@ -122,7 +122,8 @@ Masks:
 Closed forms: European vanilla (BSM, Heston) and single continuous barrier (BSM).
 
 Not yet supported, so say so rather than approximating:
-- callable bonds and cancellable swaps (Bermudan exercise via Longstaff-Schwartz),
+- callable bonds and cancellable swaps in a trade spec (the Longstaff-Schwartz building block exists in
+  `pricer/exercise.py`, but no YAML component uses it yet),
 - Hull-White calibration to swaptions,
 - equity plus stochastic-rate hybrids,
 - FX / quanto / multi-currency,
@@ -140,3 +141,10 @@ Legs and observables read the market only through `models.Scenario` (equity path
 `growth`), so they work under every model. Validation,
 the catalog and the graph pick it up automatically. Add a regression test in `tests/` against a
 closed form or a limiting case. Run the suite with `$PY -m pytest <skill_dir>/tests -q`.
+
+`pricer/exercise.py` holds model-agnostic early-termination blocks that work on (periods x paths) cashflow
+tables, for wiring Bermudan / callable / autocall features into components (see
+[reference/exercise.md](reference/exercise.md)):
+- `longstaff_schwartz`: optimal holder or issuer exercise by least-squares regression,
+- `autocall`: termination on the first period an autocall mask holds,
+- `summarize`: expected cashflows per period, fair value per path, price with confidence interval.
