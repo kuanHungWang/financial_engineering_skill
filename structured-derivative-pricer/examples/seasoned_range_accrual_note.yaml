@@ -5,12 +5,14 @@
 #     known; the rest of that period and the whole second period are simulated.
 #   - par at maturity, minus a short down-and-in put (KI 75%, every NYSE close since inception):
 #     the barrier dates already passed are read from history, so a past touch keeps the put knocked in.
-#   - initial level = the SPX close on the effective date, read from trade.history
+#   - initial level = the SPX close on the effective date, read from the fixings
 #     (or give trade.reference_levels explicitly).
-# Past closes are in trade.history (MOCK values, like the market data). Validation lists any
-# observation date before the valuation date that has no fixing.
+# Past closes come from the shared fixings file (MOCK values, like the market data). The same file prices
+# this trade at any date of its life: change only valuation_date (and the market data). Validation lists
+# any observation date before the valuation date that has no fixing.
 valuation_date: 2026-09-28
 market_data: market/mock_market.yaml
+fixings: fixings/mock_fixings.yaml       # past closes, appended daily; the trade itself never changes
 
 model: {type: black_scholes, underlying: SPX, discount_curve: USD}
 
@@ -25,19 +27,6 @@ trade:
   id: RA-SPX-6M-SEASONED
   effective_date: 2026-07-28
   maturity: 2027-01-28
-  history:
-    SPX:   # MOCK closing levels, 2026-07-28 .. 2026-09-25 (every NYSE day before the valuation date)
-      {2026-07-28: 4990.84, 2026-07-29: 4880.81, 2026-07-30: 4902.68, 2026-07-31: 4881.15,
-      2026-08-03: 4864.75, 2026-08-04: 4858.75, 2026-08-05: 4774.60, 2026-08-06: 4768.02,
-      2026-08-07: 4734.39, 2026-08-10: 4881.57, 2026-08-11: 4894.97, 2026-08-12: 4882.92,
-      2026-08-13: 4874.02, 2026-08-14: 4848.24, 2026-08-17: 4805.81, 2026-08-18: 4792.33,
-      2026-08-19: 4816.58, 2026-08-20: 4809.65, 2026-08-21: 4854.72, 2026-08-24: 4849.44,
-      2026-08-25: 4853.93, 2026-08-26: 4925.42, 2026-08-27: 4953.15, 2026-08-28: 4934.17,
-      2026-08-31: 4929.55, 2026-09-01: 4957.10, 2026-09-02: 5047.76, 2026-09-03: 5039.09,
-      2026-09-04: 5031.62, 2026-09-08: 5080.81, 2026-09-09: 5044.01, 2026-09-10: 5034.35,
-      2026-09-11: 5078.09, 2026-09-14: 5108.30, 2026-09-15: 5116.13, 2026-09-16: 5150.72,
-      2026-09-17: 5024.83, 2026-09-18: 5074.82, 2026-09-21: 5034.75, 2026-09-22: 4963.21,
-      2026-09-23: 4979.10, 2026-09-24: 5014.14, 2026-09-25: 4997.65}
   legs:
     - id: range_coupon
       type: range_accrual

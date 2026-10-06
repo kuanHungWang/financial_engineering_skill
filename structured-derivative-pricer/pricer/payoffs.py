@@ -571,18 +571,21 @@ class TargetEvent(EventFactory):
         rebate: float = Field(0.0, description="cash paid on an early termination date (not at maturity)")
         guaranteed: bool = False
         accumulated: float | None = Field(
-            None, ge=0, description="seasoned trade: coupons of `legs` already paid on or before the valuation "
-                                    "date (cash); required when such payments exist")
+            None, ge=0, description="override: coupons of `legs` already paid on or before the valuation date (cash). "
+                                    "Default: computed from the legs' past fixings, which history must then cover")
 
     @staticmethod
-    def paid_periods(spec, v: VCtx):
-        """Coupon periods of `legs` paid on or before the valuation date."""
+    def paid_legs(spec, v: VCtx):
+        """(leg factory, leg spec, leg path, paid periods) of each accumulated leg with coupons paid on or before
+        the valuation date."""
         out = []
         for lid in spec.legs:
-            c, s = v.legs.get(lid, (None, None))
-            if c is not None and hasattr(c, "all_periods"):
-                with contextlib.suppress(Exception):
-                    out += [q for q in c.all_periods(s, v) if q.pay <= v.valuation_date]
+            if lid not in v.legs or not hasattr(v.legs[lid][0], "paid_periods"):
+                continue
+            c, s = v.legs[lid]
+            paid = c.paid_periods(s, v)
+            if paid:
+                out.append((c, s, f"trade.legs[{list(v.legs).index(lid)}]", paid))
         return out
 
     @staticmethod
@@ -593,19 +596,40 @@ class TargetEvent(EventFactory):
                                f"leg ids: {sorted(v.legs)}")
         if len(set(spec.legs)) != len(spec.legs):
             v.report.error(path + ".legs", "leg ids must be distinct")
-        paid = TargetEvent.paid_periods(spec, v)
-        if paid and spec.accumulated is None:
-            v.report.error(path + ".accumulated", f"{len(paid)} coupon(s) of {spec.legs} were paid on or before the "
-                                                  f"valuation date (last on {max(q.pay for q in paid)}) and count "
-                                                  "toward the target",
-                           "set accumulated to the sum of the coupons already paid (0 if none counted)")
-        if spec.accumulated is not None and spec.accumulated >= spec.target * (1 - 1e-12):
-            v.report.error(path + ".accumulated", f"accumulated {spec.accumulated:g} already reaches the target "
-                                                  f"{spec.target:g}: the trade has terminated")
 
     @staticmethod
     def fixing_dates(spec, v, path):
-        return {}
+        """The paid coupons are recomputed by their own legs, so their past fixings are read like any other."""
+        if spec.accumulated is not None:
+            return {}
+        reqs = []
+        for c, s, lpath, paid in TargetEvent.paid_legs(spec, v):
+            with obs.reading(v, f"{path}.legs[{spec.legs.index(s.id)}] (coupons paid before the valuation date)",
+                             sticky=True):
+                reqs.append(c.fixing_dates(s, v, lpath, pers=paid))
+        return merge_requirements(*reqs)
+
+    @staticmethod
+    def paid_amount(spec, p: PCtx):
+        """Coupons of `legs` paid on or before the valuation date, per path (one value unless a payment on the
+        valuation date reads a fixing of that date, which is simulated)."""
+        if spec.accumulated is not None:
+            return np.full(1, spec.accumulated)
+        total = np.zeros(1)
+        for c, s, lpath, paid in TargetEvent.paid_legs(spec, p.v):
+            lr = c.cashflows(s, p, lpath, pers=paid)
+            total = total + lr.amounts.values.sum(axis=0) * lr.sign
+        return total
+
+    @staticmethod
+    def validate_past(spec, v: VCtx, path):
+        """After the central history check: a target already reached means the trade is over."""
+        if spec.accumulated is None and TargetEvent.fixing_dates(spec, v, path):
+            return          # a paid coupon reads a fixing of the valuation date: only known after simulation
+        paid = float(TargetEvent.paid_amount(spec, PCtx(v, None, 1))[0])
+        if paid >= spec.target * (1 - 1e-12):
+            v.report.error(path, f"coupons paid by the valuation date ({paid:,.2f}) already reach the target "
+                                 f"{spec.target:,.2f}: the trade has terminated")
 
     @staticmethod
     def payment_dates(spec, v: VCtx):
@@ -629,7 +653,7 @@ class TargetEvent(EventFactory):
         for d, lid, i in rows:
             lr = legs[lid]
             gross[pos[d]] += lr.amounts.iloc[i].values * lr.sign
-        paid = spec.accumulated or 0.0
+        paid = TargetEvent.paid_amount(spec, p)
         cum = paid + np.cumsum(gross, axis=0)
         reach = cum >= spec.target * (1 - 1e-12)
         any_hit = reach.any(axis=0)

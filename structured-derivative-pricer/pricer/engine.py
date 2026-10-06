@@ -41,7 +41,7 @@ from .models import build_underlying
 from .observables import RATES
 from .payoffs import CONTINUOUS, PCtx, VCtx, merge_requirements, parsed_conditions
 from .schedules import DateContext
-from .spec import MarketData, PricingInput
+from .spec import FixingsData, MarketData, PricingInput
 
 
 # ------------------------------------------------------------------ data holders
@@ -171,6 +171,23 @@ def build_plan(raw: dict, base_dir: Path | str = ".") -> Plan:
     if market.as_of != val:
         rep.warning("market_data.as_of", f"market data as_of {market.as_of} differs from valuation_date {val}")
 
+    # 2b. past fixings shared by trades (a file appended over the trade's life)
+    fixings = FixingsData()
+    fraw = inp.fixings
+    if isinstance(fraw, str):
+        fpath = base_dir / fraw
+        if not fpath.exists():
+            rep.error("fixings", f"fixings file not found: {fpath}",
+                      "put the file next to the input, pass an absolute path, or inline the document")
+            return plan
+        fraw = yaml.safe_load(fpath.read_text()) or {}
+    if fraw is not None:
+        try:
+            fixings = FixingsData.model_validate(fraw)
+        except ValidationError as e:
+            rep.extend_pydantic("fixings", e)
+            return plan
+
     # 3. trade dates
     cal_conv = (inp.trade.calendar, inp.trade.business_day_convention)
     for f, x, parse in (("calendar", cal_conv[0], cv.calendar), ("business_day_convention", cal_conv[1], cv.bdc)):
@@ -246,11 +263,20 @@ def build_plan(raw: dict, base_dir: Path | str = ".") -> Plan:
                 if c in market.curves:
                     need_curve(c, f"observables.{name}.curve")
 
+    # rate observables take the fixings file's entry; their own history wins date by date
+    for name, (ocls, ospec) in parsed_obs.items():
+        if hasattr(ospec, "fixings_key"):
+            shared = fixings.rates.get(ospec.fixings_key or name, {})
+            if ospec.fixings_key and ospec.fixings_key not in fixings.rates:
+                rep.warning(f"observables.{name}.fixings_key", f"no '{ospec.fixings_key}' entry in the fixings "
+                                                               f"file.{cv.suggest(ospec.fixings_key, fixings.rates)}")
+            ospec.history = {**{d: x for d, x in shared.items() if d < val}, **ospec.history}
+
     # 5. reference levels and past underlying fixings
     for u in inp.trade.reference_levels:
         if u not in unds:
             rep.error(f"trade.reference_levels.{u}", f"'{u}' is not a model underlying ({unds})")
-    history = {}
+    history = {u: {d: x for d, x in h.items() if d < val} for u, h in fixings.equities.items() if u in unds}
     for u, h in inp.trade.history.items():
         if u not in unds:
             rep.error(f"trade.history.{u}", f"'{u}' is not a model underlying.{cv.suggest(u, unds)}",
@@ -263,7 +289,7 @@ def build_plan(raw: dict, base_dir: Path | str = ".") -> Plan:
         if late:
             rep.warning(f"trade.history.{u}", f"{len(late)} date(s) on or after the valuation date are ignored "
                                               f"(first {late[0]}); those are simulated from today's spot")
-        history[u] = {d: x for d, x in h.items() if d < val}
+        history[u] = {**history.get(u, {}), **{d: x for d, x in h.items() if d < val}}
     ref_levels = {}
     for u in unds:
         if u not in market.equities:

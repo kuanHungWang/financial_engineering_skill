@@ -79,11 +79,14 @@ After that, run every command below as `$PY <skill_dir>/scripts/price.py ...`.
 - Conventions (calendars, day counts, schedules, index definitions) come from QuantLib. Name the index with
   `quantlib_index` (Sofr, Euribor, EuriborSwapIsdaFixA, ...) when QuantLib has it. Give custom fields only for
   indices QuantLib lacks, and take them from the term sheet.
-- Past fixings go in history: rate fixings in the observable's `history`, past closes of an equity underlying
-  in `trade.history`. This covers the first in-advance fixing at inception and every fixing of a **seasoned
+- Past fixings go in a **fixings file** (`fixings: fixings.yaml`; `equities` closes by underlying, `rates` by
+  name), shared by trades and appended over time. Inline `trade.history` / observable `history` also work
+  and win date by date. This covers the first in-advance fixing at inception and every fixing of a **seasoned
   trade** (priced after its trade date, e.g. mid-period with part of a range accrual or a compounded rate
-  already fixed). Ask the user for them; never invent them. For a seasoned trade also ask for the initial
-  fixing and, for a TARN, the coupons already paid (`accumulated`).
+  already fixed). Ask the user for them; never invent them. Write a trade spec once, with an explicit
+  `effective_date`: it then prices at any date of its life by changing only `valuation_date` and the market
+  data. A TARN recomputes its paid coupons from their past fixings; if those are not available, ask the user
+  for the amount already paid and give it as `accumulated`.
 
 ## Reading the result
 

@@ -90,9 +90,12 @@ def requirements(v, name, dates) -> dict:
 
 
 @contextlib.contextmanager
-def reading(v, path):
-    """Attribute the reads declared inside the block to `path` (for error messages)."""
-    before, v.reader = v.reader, path
+def reading(v, path, sticky=False):
+    """Attribute the reads declared inside the block to `path` (for error messages). A sticky reader keeps its
+    attribution through nested blocks, e.g. a TARN re-reading a leg's paid coupons."""
+    before = v.reader
+    if not before.endswith("!"):
+        v.reader = path + ("!" if sticky else "")
     try:
         yield
     finally:
@@ -120,16 +123,16 @@ def check_history(v):
     for name, readers in v.past_reads.items():
         cls, spec = lookup(v, name)
         if cls is EquityObs:
-            where = f"trade.history.{spec.underlying}" + (f" (or observables.{name}.history)"
-                                                          if name in v.observables else "")
+            where = f"the fixings file under equities.{spec.underlying}, or trade.history.{spec.underlying}"
             what = "closing level"
         else:
-            where = f"observables.{name}.history" if name in v.observables else "a declared observable's `history`"
+            key = getattr(spec, "fixings_key", None) or name
+            where = f"the fixings file under rates.{key}, or observables.{name}.history"
             what = "fixing"
         for path, dates in readers.items():
             missing = missing_history(v, name, dates)
             if missing:
-                v.report.error(path, f"'{name}' needs {len(missing)} past {what}(s) before the valuation date "
+                v.report.error(path.rstrip("!"), f"'{name}' needs {len(missing)} past {what}(s) before the valuation date "
                                      f"(first {missing[0]}, last {missing[-1]})",
                                f"give them in {where} as {{YYYY-MM-DD: value}}")
 
@@ -285,6 +288,8 @@ _NO_CURVE = ql.YieldTermStructureHandle()
 
 class _RateSpec(_Leaf):
     curve: str = Field(description="market curve the index is projected from")
+    fixings_key: str | None = Field(
+        None, description="entry of the fixings file's `rates` this index reads (default: the observable's name)")
     quantlib_index: str | None = Field(
         None, description="use a QuantLib index's conventions instead of the custom fields below")
 

@@ -182,30 +182,79 @@ def test_knock_out_event_hit_before_valuation_is_rejected():
 
 
 # ---------------------------------------------------------------- TARN with coupons already paid
-def test_target_counts_coupons_paid_before_valuation():
-    """Deterministic fixed coupons: with the first coupon already paid, the target is crossed one coupon
-    earlier, and the crossing coupon is capped at what is left."""
-    model = {"type": "black_scholes", "underlying": "AAA", "discount_curve": "USD-FLAT"}
+TARN_VAL = dt.date(2026, 10, 15)
+ENDS = [dt.date(2026, 9, 28), dt.date(2026, 12, 28), dt.date(2027, 3, 28), dt.date(2027, 6, 28)]   # backward
+
+
+def _at(d, val=TARN_VAL):
+    d["valuation_date"] = val.isoformat()
+    d["market_data"]["as_of"] = val.isoformat()
+    return d
+
+
+def _tarn_price(coupons, target, val=TARN_VAL):
+    """Coupon 1 is paid before `val`; the target is crossed at coupon 3, capped, with par paid there."""
+    dfs = [math.exp(-0.04 * (e - val).days / 365.0) for e in ENDS]
+    return coupons[1] * dfs[1] + (target - coupons[0] - coupons[1]) * dfs[2] + N * dfs[2]
+
+
+def test_target_computes_coupons_paid_before_valuation():
+    """Fixed coupons: the paid one is recomputed by the leg itself, so the target is crossed one coupon earlier
+    without any input; `accumulated` overrides it with the same result."""
     fixed = {"id": "cpn", "type": "fixed_leg", "rate": 0.08, "notional": N, "schedule": "q",
              "day_count": "Actual360"}
-    ends = [dt.date(2026, 9, 28), dt.date(2026, 12, 28), dt.date(2027, 3, 28), dt.date(2027, 6, 28)]   # backward
-    starts = [START] + ends[:-1]
-    c = [N * 0.08 * (e - s).days / 360 for s, e in zip(starts, ends)]
+    c = [N * 0.08 * (e - s).days / 360 for s, e in zip([START] + ENDS[:-1], ENDS)]
     target = c[0] + c[1] + 0.5 * c[2]
     ev = {"id": "tarn", "type": "target", "legs": ["cpn"], "target": target, "rebate": N}
-    d = doc([fixed], [ev], model=model, history=flat_history())
-    d["valuation_date"] = "2026-10-15"
-    d["market_data"]["as_of"] = "2026-10-15"
-    assert "count toward the target" in errors(d)["trade.termination_events[0].accumulated"]
-    d["trade"]["termination_events"][0]["accumulated"] = c[0]
+    d = _at(doc([fixed], [ev]))
     r = price(d)
-    val = dt.date(2026, 10, 15)
-    dfs = [math.exp(-0.04 * (e - val).days / 365.0) for e in ends]
-    expected = c[1] * dfs[1] + (target - c[0] - c[1]) * dfs[2] + N * dfs[2]
     assert r["std_error"] == pytest.approx(0, abs=1e-6)
-    assert r["price"] == pytest.approx(expected, rel=1e-9)
-    d["trade"]["termination_events"][0]["accumulated"] = target
-    assert "already reaches the target" in errors(d)["trade.termination_events[0].accumulated"]
+    assert r["price"] == pytest.approx(_tarn_price(c, target), rel=1e-9)
+    d["trade"]["termination_events"][0]["accumulated"] = c[0]
+    assert price(d)["price"] == pytest.approx(r["price"], rel=1e-12)
+    del d["trade"]["termination_events"][0]["accumulated"]
+    d["trade"]["termination_events"][0]["target"] = 0.9 * c[0]
+    assert "already reach the target" in errors(d)["trade.termination_events[0]"]
+
+
+L3M = {"type": "term_rate", "curve": "USD-FLAT", "tenor": "3M", "spot_lag": 0, "calendar": "NullCalendar",
+       "fixings_key": "USD-TERM-3M"}
+
+
+def _floater_tarn(fixings):
+    leg = {"id": "flt", "type": "floating_leg", "index": "L3M", "notional": N, "schedule": "q",
+           "fixing_lag": 0, "fixing_calendar": "NullCalendar"}
+    return leg, _at(doc([leg], observables={"L3M": dict(L3M)}), TARN_VAL) | ({"fixings": fixings} if fixings else {})
+
+
+def test_floating_tarn_reads_paid_coupon_fixings_from_the_fixings_file(tmp_path):
+    """A floating TARN valued between payment dates: the paid coupon and the current coupon both fixed in the
+    past, read from a shared fixings file under the index's fixings_key."""
+    fix = {"rates": {"USD-TERM-3M": {"2026-06-29": 0.06, "2026-09-28": 0.05, "2027-01-04": 0.99}}}
+    c = [N * 0.06 * (ENDS[0] - START).days / 360, N * 0.05 * (ENDS[1] - ENDS[0]).days / 360]
+    target = c[0] + c[1] + 1000.0
+    ev = {"id": "tarn", "type": "target", "legs": ["flt"], "target": target, "rebate": N}
+    _, d = _floater_tarn(None)
+    d["trade"]["termination_events"] = [ev]
+    e = errors(d)
+    assert any("coupons paid before the valuation date" in k and "2026-06-29" in m for k, m in e.items()), e
+    assert "trade.legs[0].index" in e                      # the current period's fixing is past too
+    path = tmp_path / "fixings.yaml"
+    path.write_text(yaml.safe_dump(fix))
+    d["fixings"] = str(path)
+    r = price(d)
+    assert r["std_error"] == pytest.approx(0, abs=1e-6)
+    assert r["price"] == pytest.approx(_tarn_price(c + [None], target), rel=1e-9)
+
+
+def test_trade_history_overrides_the_fixings_file_date_by_date():
+    out = past_days()[:20]
+    shared = {"equities": {"AAA": {d: 2000.0 for d in past_days()}}}       # every day out of range...
+    inline = {"AAA": {d: 100.0 for d in past_days()[20:]}}                  # ...except where the trade says so
+    r = price(doc([_ra()], history=inline, schedules=RA_SCHED, maturity="2027-01-29") | {"fixings": shared})
+    n_days = (RA_END - START).days
+    assert r["leg_diagnostics"]["ra"]["mean_accrual_fraction_by_period"][0] == pytest.approx(
+        (n_days - len(out)) / n_days, abs=1e-6)
 
 
 # ---------------------------------------------------------------- compounded overnight rate, half fixed

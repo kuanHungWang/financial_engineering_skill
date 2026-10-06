@@ -207,6 +207,12 @@ class _PeriodLeg(LegFactory):
         return pers
 
     @classmethod
+    def paid_periods(cls, spec, v: VCtx):
+        """Periods paid on or before the valuation date. `fixing_dates` and `cashflows` accept them as `pers`,
+        which reads their fixings from history like any other past read (e.g. coupons a TARN accumulated)."""
+        return [q for q in cls.all_periods(spec, v) if q.pay <= v.valuation_date]
+
+    @classmethod
     def payment_dates(cls, spec, v: VCtx):
         return [q.pay for q in cls.periods(spec, v)]
 
@@ -381,13 +387,13 @@ class FixedLeg(_PeriodLeg):
             cls.values(spec, v, pers, "rate", path)
 
     @classmethod
-    def fixing_dates(cls, spec, v, path):
-        pers = cls.periods(spec, v)
+    def fixing_dates(cls, spec, v, path, pers=None):
+        pers = cls.periods(spec, v) if pers is None else pers
         return conditions_requirements(spec, v, path, pers[-1].end) if pers else {}
 
     @classmethod
-    def cashflows(cls, spec, p: PCtx, path):
-        pers = cls.periods(spec, p.v)
+    def cashflows(cls, spec, p: PCtx, path, pers=None):
+        pers = cls.periods(spec, p.v) if pers is None else pers
         amounts = cls.values(spec, p.v, pers, "rate") * np.array([[q.tau] for q in pers])
         return cls.finish(spec, p, path, pers, amounts, {})
 
@@ -410,15 +416,15 @@ class FloatingLeg(_PeriodLeg):
             FloatingRate.validate(spec, v, path, pers)
 
     @classmethod
-    def fixing_dates(cls, spec, v, path):
-        pers = cls.periods(spec, v)
+    def fixing_dates(cls, spec, v, path, pers=None):
+        pers = cls.periods(spec, v) if pers is None else pers
         with obs.reading(v, path + ".index"):
             own = FloatingRate.requirements(spec, v, pers)
         return merge_requirements(own, conditions_requirements(spec, v, path, pers[-1].end))
 
     @classmethod
-    def cashflows(cls, spec, p: PCtx, path):
-        pers = cls.periods(spec, p.v)
+    def cashflows(cls, spec, p: PCtx, path, pers=None):
+        pers = cls.periods(spec, p.v) if pers is None else pers
         diag = {}
         r = FloatingRate.rates(spec, p, pers, diag)
         return cls.finish(spec, p, path, pers, r * np.array([q.tau for q in pers])[:, None], diag)
@@ -535,8 +541,8 @@ class RangeAccrual(_PeriodLeg):
                 obs.require_stochastic(v, r.observable, rp, "a range condition")
 
     @classmethod
-    def fixing_dates(cls, spec, v, path):
-        pers = cls.periods(spec, v)
+    def fixing_dates(cls, spec, v, path, pers=None):
+        pers = cls.periods(spec, v) if pers is None else pers
         dates = sorted({d for q in pers for d in cls.observations(spec, q)[0]})
         reqs = []
         for i, r in enumerate(spec.range):
@@ -565,8 +571,8 @@ class RangeAccrual(_PeriodLeg):
         return w @ ok[[pos[d] for d in fix]] / w.sum()
 
     @classmethod
-    def cashflows(cls, spec, p: PCtx, path):
-        pers = cls.periods(spec, p.v)
+    def cashflows(cls, spec, p: PCtx, path, pers=None):
+        pers = cls.periods(spec, p.v) if pers is None else pers
         diag = {}
         bounds = cls.bounds(spec, p.v, pers)
         frac = np.vstack([cls.fraction(spec, p, q, [(lo[k], hi[k]) for lo, hi in bounds])

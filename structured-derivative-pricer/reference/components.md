@@ -8,6 +8,7 @@ This file explains what the components *mean* and how to combine them.
 ```yaml
 valuation_date: 2026-09-28          # pricing date (market data as_of should match)
 market_data: market.yaml            # path relative to this file, or the market document inline
+fixings: fixings.yaml               # optional past fixings shared by trades (path or inline); see below
 model: {type: ..., ...}             # one model; it names the underlying(s) and discount curve
 observables: {name: {type: ...}}    # named quantities read by legs, ranges, barriers (rates, spreads, worst-of)
 schedules: {name: {type: ...}, ...} # named date lists used by legs / conditions / events
@@ -18,8 +19,8 @@ trade:
   maturity: 2027-09-28              # ISO date or tenor from effective_date ("1Y")
   calendar: WeekendsOnly            # adjusts dates given as tenors (default WeekendsOnly)
   business_day_convention: ModifiedFollowing
-  reference_levels: {SPX: 5012.3}   # optional initial fixings; default = trade.history on effective_date, else spot
-  history: {SPX: {2026-07-28: 5012.3, ...}}   # seasoned trade: past closes of model underlyings
+  reference_levels: {SPX: 5012.3}   # optional initial fixings; default = the close on effective_date, else spot
+  history: {SPX: {2026-07-28: 5012.3, ...}}   # optional inline past closes; win over the fixings file
   legs: [...]
   termination_events: [...]
 pricing: {method: auto, num_paths: 20000, seed: 42, antithetic: true, ...}
@@ -82,10 +83,15 @@ Every product is a combination of these blocks. You never write a payoff formula
   SOFR-paying equity range accrual.
 - **Past fixings.** A fixing date before the valuation date (for example the first in-advance fixing at
   inception, or a seasoned trade) is read from history, never simulated. Validation lists the missing dates.
-  - Rate observables: the observable's `history: {YYYY-MM-DD: value}`.
-  - Equity underlyings: `trade.history: {SPX: {YYYY-MM-DD: level}}`, shared by every observable, barrier and
-    range on that underlying. Values are closing **levels**, also for a `performance` observable (which divides
-    them by the reference level). An equity observable's own `history` overrides it date by date.
+  - The **fixings file** (`fixings:` at the top of the document) holds `equities: {SPX: {YYYY-MM-DD: level}}`
+    and `rates: {NAME: {YYYY-MM-DD: value}}`. It is meant to be shared by trades and appended each day; a run
+    ignores its dates on or after the valuation date. A rate observable reads `rates.<fixings_key>`, by
+    default its own name; set `fixings_key` to use a market-wide name (e.g. `USD-SOFR`).
+  - Inline history wins date by date: a rate observable's `history: {YYYY-MM-DD: value}`, and
+    `trade.history: {SPX: {YYYY-MM-DD: level}}` for an underlying.
+  - Equity history is closing **levels**, shared by every observable, barrier and range on that underlying,
+    also for a `performance` observable (which divides them by the reference level). An equity observable's own
+    `history` overrides it date by date.
   - Composites (`linear`, `min_of`, `max_of`) read the history of their leaves.
 
 ### Legs
@@ -200,7 +206,9 @@ Use it for an optional early termination. The exercise is a choice someone makes
 ### Seasoned trades (priced after inception)
 
 Set `effective_date` to the trade date and keep the original schedules. Nothing else is specific to a
-seasoned trade, because past fixings are handled in one place for every payoff:
+seasoned trade, because past fixings are handled in one place for every payoff. The same spec prices a new
+deal on its trade date and the live position at any later date: change `valuation_date` and the market data,
+and keep appending the fixings file.
 
 - **One read path.** Every component reads the market on a date through its observables (a model underlying is
   the observable of its own name). A date before the valuation date returns the known fixing from history; a
@@ -219,9 +227,9 @@ What is not a fixing, and so stays specific:
 |---|---|
 | cashflows | paid on or before the valuation date: dropped. The current coupon period keeps its full accrual |
 | `knock_out` event (autocall, KO) | a hit on a past date (read from history) is an error: the trade has terminated |
-| `target` (TARN) | coupons already paid are not recomputed: give their sum in `accumulated` (required when they exist) |
+| `target` (TARN) | coupons already paid are recomputed by their legs from past fixings (so history must reach back to the first one); a reached target is an error (terminated). `accumulated: <cash>` overrides the computation |
 | `bermudan_call` | only exercise dates after the valuation date (a past date was a decision, not a fixing) |
-| relative strikes / barriers / performance | `reference_levels`, else the close on `effective_date` from `trade.history` |
+| relative strikes / barriers / performance | `reference_levels`, else the close on `effective_date` from history |
 | `observation: continuous` | only monitors forward from today (warning): confirm with the user the barrier was not hit |
 
 ## Conventions (read these before writing a spec)
@@ -299,7 +307,7 @@ What is not a fixing, and so stays specific:
 | `callable_fixed_rate_bond_calibrated.yaml` | same 10NC2 bond | Hull-White volatility calibrated to coterminal swaptions |
 | `cancellable_swap.yaml` | 5Y receive-fixed swap, cancellable annually by the counterparty | `fixed_leg` + short `floating_leg` + `bermudan_call` (issuer, price 0, swap-rate regressor), Hull-White |
 | `bermudan_put.yaml` | 1Y Bermudan put on SPX, monthly exercise | `option_payoff` + `bermudan_call` (holder, `exercise_option`) |
-| `seasoned_range_accrual_note.yaml` | 6M SPX range accrual traded 2 months ago, valued mid-period | `trade.history` (past closes) for the range days and a daily knock-in put |
+| `seasoned_range_accrual_note.yaml` | 6M SPX range accrual traded 2 months ago, valued mid-period | shared fixings file (`fixings/mock_fixings.yaml`) for the range days and a daily knock-in put; prices at any date with `--set valuation_date=...` |
 
 ## Models
 
