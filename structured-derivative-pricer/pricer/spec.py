@@ -52,7 +52,12 @@ class TradeSpec(SpecModel):
     business_day_convention: str = Field("ModifiedFollowing", description="for dates given as tenors")
     reference_levels: dict[str, float] = Field(
         default_factory=dict,
-        description="initial fixing per underlying for relative strikes/barriers; default is today's spot")
+        description="initial fixing per underlying for relative strikes/barriers; default: trade.history on "
+                    "effective_date, else today's spot")
+    history: dict[str, dict[dt.date, float]] = Field(
+        default_factory=dict,
+        description="past closing levels per model underlying {UNDERLYING: {YYYY-MM-DD: level}}, read for every "
+                    "observation date before the valuation date (barriers, ranges, autocalls of a seasoned trade)")
     legs: list[dict] = Field(min_length=1)
     termination_events: list[dict] = Field(default_factory=list)
 

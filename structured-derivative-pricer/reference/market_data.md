@@ -62,7 +62,8 @@ swaption_vols:                    # ATM swaption vols, for Hull-White calibratio
 
 - A curve named only by a rate observable (e.g. a forecast curve different from the discount curve) is
   built too. Under `hull_white` it moves with the model factor (deterministic basis to the discount curve).
-- Past index fixings are not market data files: they go in the observable's `history` in the trade spec.
+- Past fixings are not market data files. Rate fixings go in the observable's `history`, and past closing
+  levels of an equity underlying go in `trade.history` (see "Seasoned trades" in components.md).
 - `bootstrap` curves: deposits use the currency's money-market day count (Act/360; Act/365F for
   GBP, TWD) with 2 settlement days; swaps are annual 30/360 fixed against a 6M floating index on
   the currency's calendar. The curve is on Actual/365F. Beyond the last quote it extrapolates

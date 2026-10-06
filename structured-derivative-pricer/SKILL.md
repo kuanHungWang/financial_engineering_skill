@@ -79,8 +79,11 @@ After that, run every command below as `$PY <skill_dir>/scripts/price.py ...`.
 - Conventions (calendars, day counts, schedules, index definitions) come from QuantLib. Name the index with
   `quantlib_index` (Sofr, Euribor, EuriborSwapIsdaFixA, ...) when QuantLib has it. Give custom fields only for
   indices QuantLib lacks, and take them from the term sheet.
-- Past fixings (e.g. the first in-advance fixing at inception) go in the observable's `history`. Ask the
-  user for them; never invent them.
+- Past fixings go in history: rate fixings in the observable's `history`, past closes of an equity underlying
+  in `trade.history`. This covers the first in-advance fixing at inception and every fixing of a **seasoned
+  trade** (priced after its trade date, e.g. mid-period with part of a range accrual or a compounded rate
+  already fixed). Ask the user for them; never invent them. For a seasoned trade also ask for the initial
+  fixing and, for a TARN, the coupons already paid (`accumulated`).
 
 ## Reading the result
 
@@ -130,6 +133,9 @@ Masks:
 - trade-level `bermudan_call`: issuer call / holder put / cancellation / Bermudan option on a schedule, priced
   by Longstaff-Schwartz (callable and puttable bonds, cancellable swaps, Bermudan options).
 
+Seasoned trades: priced after inception, between payment dates. Past rate, range and barrier fixings come from
+history and the rest is simulated (see "Seasoned trades" in components.md).
+
 Closed forms: European vanilla (BSM, Heston) and single continuous barrier (BSM).
 
 Not yet supported, so say so rather than approximating:
@@ -139,8 +145,8 @@ Not yet supported, so say so rather than approximating:
 - FX / quanto / multi-currency,
 - snowball / memory coupons,
 - digital coupons other than range accrual,
-- historical barrier fixings for seasoned trades (past barrier observation dates are ignored with a warning;
-  past rate / range fixings are supported through `history`),
+- a seasoned option leg whose expiry has passed but is not yet paid (give the known amount as `fixed_amount`),
+- past monitoring of a `continuous` barrier (closed forms only look forward from today),
 - custom payoff code (planned: a bridge for AI-written payoff components).
 
 ## Extending (for developers, not during a pricing task)

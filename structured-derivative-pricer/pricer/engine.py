@@ -244,18 +244,39 @@ def build_plan(raw: dict, base_dir: Path | str = ".") -> Plan:
                 if c in market.curves:
                     need_curve(c, f"observables.{name}.curve")
 
-    # 5. reference levels
+    # 5. reference levels and past underlying fixings
     for u in inp.trade.reference_levels:
         if u not in unds:
             rep.error(f"trade.reference_levels.{u}", f"'{u}' is not a model underlying ({unds})")
-    ref_levels = {u: inp.trade.reference_levels.get(u, market.equities[u].spot)
-                  for u in unds if u in market.equities}
-    if eff0 < val:
-        for u in unds:
-            if u not in inp.trade.reference_levels:
+    history = {}
+    for u, h in inp.trade.history.items():
+        if u not in unds:
+            rep.error(f"trade.history.{u}", f"'{u}' is not a model underlying.{cv.suggest(u, unds)}",
+                      f"model underlyings: {unds}; give rate fixings in the observable's own history")
+            continue
+        bad = sorted(d for d, x in h.items() if not x > 0)
+        if bad:
+            rep.error(f"trade.history.{u}", f"levels must be > 0 (first bad date {bad[0]})")
+        late = sorted(d for d in h if d >= val)
+        if late:
+            rep.warning(f"trade.history.{u}", f"{len(late)} date(s) on or after the valuation date are ignored "
+                                              f"(first {late[0]}); those are simulated from today's spot")
+        history[u] = {d: x for d, x in h.items() if d < val}
+    ref_levels = {}
+    for u in unds:
+        if u not in market.equities:
+            continue
+        if u in inp.trade.reference_levels:
+            ref_levels[u] = inp.trade.reference_levels[u]
+        elif eff0 < val and eff0 in history.get(u, {}):
+            ref_levels[u] = history[u][eff0]
+        else:
+            ref_levels[u] = market.equities[u].spot
+            if eff0 < val:
                 rep.warning(f"trade.reference_levels.{u}",
                             f"trade started {eff0} (before valuation) but no initial fixing given; using spot",
-                            "set trade.reference_levels for relative strikes/barriers of a seasoned trade")
+                            "set trade.reference_levels (or trade.history on effective_date) for relative "
+                            "strikes/barriers of a seasoned trade")
 
     # 6. schedules (resolved in dependency order)
     sched_parsed = {}
@@ -302,7 +323,7 @@ def build_plan(raw: dict, base_dir: Path | str = ".") -> Plan:
     v = VCtx(dates, val, maturity, resolved, unds, {u: market.equities[u].spot for u in unds},
              ref_levels, rep, broken_schedules=set(sched_parsed) - set(resolved) | set(inp.schedules) - set(sched_parsed),
              observables=parsed_obs, stochastic_rates=mcls.stochastic_rates, model_name=mcls.type_name,
-             curve_names=set(market.curves))
+             curve_names=set(market.curves), history=history)
     plan.v = v
     obs.validate_all(v)
     broken_obs = set(inp.observables) - set(parsed_obs)

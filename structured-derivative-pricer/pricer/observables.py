@@ -13,7 +13,8 @@ is the same on every path (a forward rate under an equity model with determinist
 Every model underlying is also an observable under its own name (its level), so `SPX` works
 without a declaration. Rate observables are read from the model: stochastic under hull_white,
 deterministic forwards of today's curve under the equity models. Fixing dates before the
-valuation date are read from the observable's `history`.
+valuation date are read from the observable's `history` (equity: closing levels, also from
+trade.history), so a seasoned trade mixes known fixings with simulated ones.
 """
 from __future__ import annotations
 
@@ -82,6 +83,14 @@ def requirements(v, name, dates) -> dict:
     return cls.requirements(spec, v, future)
 
 
+def past_value(v, cls, spec, d):
+    """Known fixing of a leaf observable on a past date d, or None. Equity history holds levels: an
+    equity observable's own `history`, else trade.history of its underlying."""
+    if hasattr(cls, "past_value"):
+        return cls.past_value(spec, v, d)
+    return getattr(spec, "history", {}).get(d)
+
+
 def check_fixings(v, name, dates, path) -> bool:
     """Past fixing dates must be covered by `history` of every leaf the observable depends on."""
     cls, spec = lookup(v, name)
@@ -90,10 +99,13 @@ def check_fixings(v, name, dates, path) -> bool:
         return True
     if not cls.is_leaf:
         return all([check_fixings(v, n, past, path) for n in cls.deps(spec)])
-    missing = [d for d in past if d not in getattr(spec, "history", {})]
+    missing = [d for d in past if past_value(v, cls, spec, d) is None]
     if missing:
-        where = f"observables.{name}.history" if name in v.observables else \
-            f"a declared observable with `history` (e.g. {{type: equity, underlying: {name}, history: ...}})"
+        if cls is EquityObs:
+            where = f"trade.history.{spec.underlying}" + (f" or observables.{name}.history" if name in v.observables
+                                                          else "")
+        else:
+            where = f"observables.{name}.history" if name in v.observables else f"a declared observable's `history`"
         v.report.error(path, f"observable '{name}' needs {len(missing)} past fixing(s) before the valuation date "
                              f"(first {missing[0]}, last {missing[-1]})",
                        f"give them in {where} as {{YYYY-MM-DD: value}}")
@@ -103,10 +115,16 @@ def check_fixings(v, name, dates, path) -> bool:
 
 def evaluate(p, name, dates) -> np.ndarray:
     """Values on `dates` (any order): shape (len(dates), n_paths) or (len(dates), 1)."""
-    v = p.v
-    cls, spec = lookup(v, name)
+    cls, spec = lookup(p.v, name)
     if not cls.is_leaf:
         return cls.combine(spec, [evaluate(p, n, dates) for n in cls.deps(spec)])
+    return evaluate_leaf(p, cls, spec, dates)
+
+
+def evaluate_leaf(p, cls, spec, dates) -> np.ndarray:
+    """A leaf's values: simulated on dates >= the valuation date, known fixings before it. With only past
+    dates no simulation is read, so validation can evaluate history with a context whose scenario is None."""
+    v = p.v
     dates = list(dates)
     fut = [d for d in dates if d >= v.valuation_date]
     fvals = cls.values(spec, p, fut) if fut else np.zeros((0, 1))
@@ -119,7 +137,7 @@ def evaluate(p, name, dates) -> np.ndarray:
             out[i] = fvals[j]
             j += 1
         else:
-            out[i] = spec.history[d]
+            out[i] = past_value(v, cls, spec, d)
     return out
 
 
@@ -191,11 +209,15 @@ class _Leaf(SpecModel):
 class EquityObs(ObservableFactory):
     description = ("A simulated underlying: `level` is the price S_t; `performance` is S_t / S_ref "
                    "(S_ref = trade.reference_levels, default today's spot). Every model underlying is also "
-                   "usable by name as its level without declaring it.")
+                   "usable by name as its level without declaring it. Past closing levels come from `history` "
+                   "or, shared by every observable of the underlying, from trade.history.")
 
     class Spec(_Leaf):
         underlying: str
         mode: Literal["level", "performance"] = "level"
+        history: dict[dt.date, float] = Field(
+            default_factory=dict, description="past closing LEVELS {YYYY-MM-DD: S} (also in performance mode); "
+                                              "usually given once per underlying in trade.history instead")
 
     @staticmethod
     def validate(spec, v, path):
@@ -216,6 +238,14 @@ class EquityObs(ObservableFactory):
     def values(spec, p, dates):
         x = p.scenario.equity[spec.underlying].loc[list(dates)].values
         return x / p.v.reference_levels[spec.underlying] if spec.mode == "performance" else x
+
+    @staticmethod
+    def past_value(spec, v, d):
+        """Past closing level (own history, else trade.history), as a performance in performance mode."""
+        x = spec.history.get(d, v.history.get(spec.underlying, {}).get(d))
+        if x is None:
+            return None
+        return x / v.reference_levels[spec.underlying] if spec.mode == "performance" else x
 
 
 # Rate observables delegate every convention (value date, index maturity, end-of-month, day count,

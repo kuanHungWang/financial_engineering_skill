@@ -18,7 +18,8 @@ trade:
   maturity: 2027-09-28              # ISO date or tenor from effective_date ("1Y")
   calendar: WeekendsOnly            # adjusts dates given as tenors (default WeekendsOnly)
   business_day_convention: ModifiedFollowing
-  reference_levels: {SPX: 5012.3}   # optional initial fixings; default = today's spot
+  reference_levels: {SPX: 5012.3}   # optional initial fixings; default = trade.history on effective_date, else spot
+  history: {SPX: {2026-07-28: 5012.3, ...}}   # seasoned trade: past closes of model underlyings
   legs: [...]
   termination_events: [...]
 pricing: {method: auto, num_paths: 20000, seed: 42, antithetic: true, ...}
@@ -80,8 +81,12 @@ Every product is a combination of these blocks. You never write a payoff formula
   rate under `black_scholes` would get only intrinsic value. Linear use is fine, e.g. a plain FRN, or a
   SOFR-paying equity range accrual.
 - **Past fixings.** A fixing date before the valuation date (for example the first in-advance fixing at
-  inception, or a seasoned trade) must be given in the observable's `history: {YYYY-MM-DD: value}`. Validation
-  lists the missing dates. To give history for an underlying, declare `{type: equity, underlying: X, history: ...}`.
+  inception, or a seasoned trade) is read from history, never simulated. Validation lists the missing dates.
+  - Rate observables: the observable's `history: {YYYY-MM-DD: value}`.
+  - Equity underlyings: `trade.history: {SPX: {YYYY-MM-DD: level}}`, shared by every observable, barrier and
+    range on that underlying. Values are closing **levels**, also for a `performance` observable (which divides
+    them by the reference level). An equity observable's own `history` overrides it date by date.
+  - Composites (`linear`, `min_of`, `max_of`) read the history of their leaves.
 
 ### Legs
 
@@ -192,6 +197,28 @@ Use it for an optional early termination. The exercise is a choice someone makes
 - **Path counts.** Pricing costs about twice the simulation time. `exercise_fit_paths: 0` fits in sample, which
   is faster but biased toward the exerciser.
 
+### Seasoned trades (priced after inception)
+
+Set `effective_date` to the trade date and keep the original schedules. Everything that already happened is read
+from history; everything after the valuation date is simulated. A fixing **on** the valuation date is simulated
+from today's spot / curve.
+
+| feature | before the valuation date |
+|---|---|
+| coupon periods | paid on or before the valuation date: dropped. The current period keeps its full accrual |
+| in-advance / in-arrears rate | the fixing comes from the index `history` |
+| compounded in arrears | the known daily rates of the current period compound from `history`, the rest is simulated |
+| range accrual | known observation days count from history, the rest are simulated; the fraction uses the whole period |
+| `knock_in` / `knock_out` condition | past observation dates are read from history: a past touch is already in the mask |
+| `knock_out` event (autocall, KO) | past dates need history; a past hit is an error (the trade has terminated) |
+| `target` (TARN) | coupons already paid go in `accumulated` (cash); validation requires it when such payments exist |
+| `bermudan_call` | only exercise dates after the valuation date |
+| relative strikes / barriers / performance | `reference_levels`, else the close on `effective_date` from `trade.history` |
+| `observation: continuous` | only monitors forward from today (warning): confirm with the user the barrier was not hit |
+
+Not covered: an option leg whose expiry has passed but which is still unpaid. Give its known amount as a
+`fixed_amount` leg.
+
 ## Conventions (read these before writing a spec)
 
 - **Perspective.** The trade is priced from the holder's view. `position: long` means the holder
@@ -267,6 +294,7 @@ Use it for an optional early termination. The exercise is a choice someone makes
 | `callable_fixed_rate_bond_calibrated.yaml` | same 10NC2 bond | Hull-White volatility calibrated to coterminal swaptions |
 | `cancellable_swap.yaml` | 5Y receive-fixed swap, cancellable annually by the counterparty | `fixed_leg` + short `floating_leg` + `bermudan_call` (issuer, price 0, swap-rate regressor), Hull-White |
 | `bermudan_put.yaml` | 1Y Bermudan put on SPX, monthly exercise | `option_payoff` + `bermudan_call` (holder, `exercise_option`) |
+| `seasoned_range_accrual_note.yaml` | 6M SPX range accrual traded 2 months ago, valued mid-period | `trade.history` (past closes) for the range days and a daily knock-in put |
 
 ## Models
 
