@@ -264,6 +264,7 @@ Use it for an optional early termination. The exercise is a choice someone makes
 | `hybrid_fixed_then_range_accrual.yaml` | 10Y: fixed year 1, then rate range accrual with a stepping range | one `range_accrual`, per-period bounds, Hull-White |
 | `cms_inverse_floater_in_arrears.yaml` | 10Y: fixed year 1, then 5% − 0.8×CMS5Y collared 2–4%, in arrears | `fixed_leg` + `floating_leg` on split schedules, Hull-White |
 | `callable_fixed_rate_bond.yaml` | 10NC2 callable fixed-rate bond, semi-annual calls at par | `fixed_leg` + principal + `bermudan_call` (issuer), Hull-White |
+| `callable_fixed_rate_bond_calibrated.yaml` | same 10NC2 bond | Hull-White volatility calibrated to coterminal swaptions |
 | `cancellable_swap.yaml` | 5Y receive-fixed swap, cancellable annually by the counterparty | `fixed_leg` + short `floating_leg` + `bermudan_call` (issuer, price 0, swap-rate regressor), Hull-White |
 | `bermudan_put.yaml` | 1Y Bermudan put on SPX, monthly exercise | `option_payoff` + `bermudan_call` (holder, `exercise_option`) |
 
@@ -273,12 +274,40 @@ Use it for an optional early termination. The exercise is a choice someone makes
 |---|---|---|---|
 | `black_scholes` | one (`underlying`) or several (`underlyings` + explicit `correlation`) | deterministic | European, single continuous barrier |
 | `heston` | one; `params` or calibrated to the surface | deterministic | European |
-| `hull_white` | none (rates only) | stochastic 1F, path-wise discounting; give `mean_reversion`, `volatility` | none |
+| `hull_white` | none (rates only) | stochastic 1F, path-wise discounting; give `mean_reversion`, `volatility`, or `calibration` to swaptions | none |
 
 - A vol `surface` gives Dupire local vol (matches all vanilla prices); `constant`/`term` give deterministic vol.
 - Hull-White is one-factor, so all rates are perfectly correlated in their moves. That understates the
   volatility of a CMS spread. Say so when reporting a spread product.
-- Not yet: equity + stochastic rates hybrids, swaption calibration of Hull-White, multi-currency / quanto.
+- Not yet: equity + stochastic rates hybrids, multi-currency / quanto.
+
+### Hull-White calibration to swaptions
+
+Instead of `volatility` (and optionally `mean_reversion`), give a `calibration` block naming a
+`market_data.swaption_vols` matrix. QuantLib's `HullWhite` model is fitted to ATM swaptions on the model's
+discount curve with the Jamshidian engine (Levenberg-Marquardt), and the simulation uses the fitted values.
+
+```yaml
+model:
+  type: hull_white
+  discount_curve: USD
+  mean_reversion: 0.03            # held fixed; with calibrate_mean_reversion: true it is the starting guess
+  calibration:
+    swaption_vol: USD             # market_data.swaption_vols.USD
+    instruments: coterminal       # coterminal | all | [{expiry: 2Y, tenor: 8Y}, ...]
+    calibrate_mean_reversion: false
+    error: relative_price         # relative_price | price | implied_vol
+```
+
+- `coterminal` (default): annual expiries into the swap that ends at the trade maturity (1Yx9Y ... 9Yx1Y
+  for a 10Y trade). Use it for callable bonds and cancellable swaps.
+- `all`: every quoted point of the matrix. A constant-parameter 1F model rarely fits a whole matrix.
+- Fix `mean_reversion` unless the user asks to fit it. Mean reversion is poorly identified by ATM swaptions
+  alone, and it drives the price of a Bermudan.
+- `model_diagnostics.calibration` lists the market and model vol of every instrument and the RMS vol
+  error. The result warns when an instrument misses by more than 5% of its vol. Report that warning.
+- The swaptions' floating index is projected off the discount curve (single curve), the same assumption the
+  simulation makes.
 
 ## Pricing settings
 

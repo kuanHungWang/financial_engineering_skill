@@ -82,3 +82,5 @@ class MarketData(SpecModel):
     as_of: dt.date
     curves: dict[str, dict] = Field(default_factory=dict)
     equities: dict[str, EquityData] = Field(default_factory=dict)
+    swaption_vols: dict[str, dict] = Field(
+        default_factory=dict, description="swaption vol matrices by name (Hull-White calibration)")

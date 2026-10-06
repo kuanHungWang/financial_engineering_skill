@@ -253,7 +253,7 @@ def test_bootstrap_reprices_its_quotes(currency):
 
 def test_catalog_covers_every_kind():
     c = catalog()
-    assert set(c) == {"curve", "vol", "schedule", "model", "leg", "condition", "event", "analytic", "observable"}
+    assert set(c) == {"curve", "vol", "swaption_vol", "schedule", "model", "leg", "condition", "event", "analytic", "observable"}
     assert "option_payoff" in c["leg"] and "knock_in" in c["condition"]
 
 

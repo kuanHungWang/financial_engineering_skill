@@ -1,7 +1,7 @@
 # Market data format
 
 One YAML (or JSON) document. Point to it from the trade spec with `market_data: <path>`, or
-inline it under `market_data:`. Exact fields: `price.py catalog curve` and `price.py catalog vol`.
+inline it under `market_data:`. Exact fields: `price.py catalog curve`, `price.py catalog vol` and `price.py catalog swaption_vol`.
 
 ```yaml
 as_of: 2026-09-28                 # should equal the trade's valuation_date (warning otherwise)
@@ -29,6 +29,16 @@ equities:
       vols:                       # vols[i][j] = implied vol at tenors[i], strikes[j]
         - [0.26, 0.22, 0.19, 0.17, 0.16]
         - ...
+swaption_vols:                    # ATM swaption vols, for Hull-White calibration (model.calibration)
+  USD:
+    type: matrix
+    currency: USD                 # swap conventions, as for bootstrap curves (annual 30/360 vs 6M index)
+    vol_type: normal              # normal (Bachelier) or lognormal (Black; `shift` for shifted lognormal)
+    expiries: [1Y, 2Y, 5Y, 10Y]   # option expiries (rows)
+    tenors:   [1Y, 5Y, 10Y]       # underlying swap tenors (columns)
+    vols:                         # vols[i][j] = vol for expiries[i] into tenors[j]
+      - [0.0091, 0.0084, 0.0081]
+      - ...
 ```
 
 ## Converting user data
@@ -43,6 +53,8 @@ equities:
   0, state it.
 - **Time-to-expiry from a date grid**: convert expiry dates to tenors from `as_of`, or ask for
   tenors.
+- **Swaption vols** are decimals too: a normal vol of 85bp is `0.0085`, a lognormal vol of 20% is `0.20`.
+  Ask which kind the user's table holds when it is not labelled. Rows are expiries, columns swap tenors.
 - **Coverage**: the vol surface and the curve should reach the trade maturity. Otherwise
   validation warns that flat extrapolation is used. Pass the warning on to the user.
 
@@ -63,5 +75,7 @@ equities:
   local vol well-defined. Where local variance is still negative, the engine floors it at ATM
   vol and warns with the fraction of the grid affected. That usually means butterfly or
   calendar arbitrage in the quotes.
+- Swaption vol matrices interpolate bilinearly between quotes and extrapolate flat. Validation warns when
+  the longest expiry plus the longest tenor ends before the trade maturity.
 - Mock data: `scripts/make_mock_market.py OUT.yaml --as-of <date> [--ticker SPX --spot 5000]`
-  writes synthetic data labelled as mock. Use it only for demos and tests.
+  writes synthetic data labelled as mock (curves, an equity surface, a USD normal swaption matrix). Use it only for demos and tests.

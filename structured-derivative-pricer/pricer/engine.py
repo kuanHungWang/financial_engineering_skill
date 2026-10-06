@@ -77,6 +77,7 @@ class Plan:
     trade: ParsedTrade | None = None
     v: VCtx | None = None
     curve_specs: dict = field(default_factory=dict)       # name -> (cls, spec)
+    swaption_vol_specs: dict = field(default_factory=dict)  # name -> (cls, spec)
     method: str | None = None
     method_reason: str = ""
     analytic_cls: type | None = None
@@ -219,6 +220,16 @@ def build_plan(raw: dict, base_dir: Path | str = ".") -> Plan:
                 cv.calendar(eq.calendar)
             except ValueError as e:
                 rep.error(f"market_data.equities.{u}.calendar", str(e))
+    for name in mcls.swaption_vols(mspec):
+        if name not in market.swaption_vols:
+            rep.error("model.calibration.swaption_vol",
+                      f"swaption vol '{name}' not in market data.{cv.suggest(name, market.swaption_vols)}",
+                      f"market swaption_vols: {sorted(market.swaption_vols)}")
+            continue
+        scls, sspec = registry.parse("swaption_vol", market.swaption_vols[name],
+                                     f"market_data.swaption_vols.{name}", rep)
+        if scls:
+            plan.swaption_vol_specs[name] = (scls, sspec)
     mcls.validate(mspec, market, rep, "model")
     minfo = ModelInfo(mcls, mspec, getattr(mcls, "has_european_engine", False),
                       getattr(mcls, "has_barrier_engine", False))
@@ -383,6 +394,11 @@ def build_plan(raw: dict, base_dir: Path | str = ".") -> Plan:
             if last < maturity:
                 rep.warning(f"market_data.equities.{u}.vol", f"vol data ends {last}, before maturity {maturity}; "
                                                              "flat extrapolation is used")
+    for name, (_, sspec) in plan.swaption_vol_specs.items():
+        last = max(dates.resolve(t, anchor=dates.resolve(e, anchor=val)) for e in sspec.expiries for t in sspec.tenors)
+        if last < maturity:
+            rep.warning(f"market_data.swaption_vols.{name}", f"swaption vols cover swaps ending by {last}, before "
+                                                             f"maturity {maturity}; flat extrapolation is used")
     for c, (ccls, cspec) in plan.curve_specs.items():
         tenors = getattr(cspec, "tenors", None) or [q.tenor for q in getattr(cspec, "swap", [])] or \
             [q.tenor for q in getattr(cspec, "deposit", [])]
@@ -470,13 +486,20 @@ def _build_graph(plan: Plan):
     years = (v.maturity - v.valuation_date).days / 365.0
     curve_nodes = [f"curve:{c}" for c in plan.curve_specs]
 
+    for name, (scls, sspec) in plan.swaption_vol_specs.items():
+        add(f"swaption_vol:{name}", [], f"{scls.type_name} swaption vols ({sspec.vol_type})",
+            lambda r, scls=scls, sspec=sspec: scls.build(sspec))
+    svol_nodes = [f"swaption_vol:{x}" for x in plan.swaption_vol_specs]
+
     def build_model(r):
+        extra = {"swaption_vols": {x: r[f"swaption_vol:{x}"] for x in plan.swaption_vol_specs}} if svol_nodes else {}
         m = mi.cls.build(mi.spec, inp.valuation_date, r[f"discount:{disc}"],
-                         {u: r[f"underlying:{u}"] for u in unds}, horizon_years=years)
+                         {u: r[f"underlying:{u}"] for u in unds}, horizon_years=years, **extra)
         m.curves = {c: r[f"curve:{c}"] for c in plan.curve_specs}
         return m
-    add("model", [f"discount:{disc}"] + [f"underlying:{u}" for u in unds] + curve_nodes,
-        f"{mi.cls.type_name} model", build_model)
+    calibrated = " calibrated to " + ", ".join(plan.swaption_vol_specs) + " swaptions" if svol_nodes else ""
+    add("model", [f"discount:{disc}"] + [f"underlying:{u}" for u in unds] + curve_nodes + svol_nodes,
+        f"{mi.cls.type_name} model{calibrated}", build_model)
 
     if plan.method == "mc":
         s = inp.pricing
@@ -605,12 +628,24 @@ def _run(plan: Plan) -> dict:
                 f"[WARNING] model: {u} Dupire local vol is illegal on {lv['illegal_fraction']:.1%} of the "
                 f"(0..T, 50%..200% spot) grid; those points are floored at {lv['floor']:.4f}. Check the vol surface "
                 "for butterfly/calendar arbitrage (steep wings) if paths spend time there.")
+    cal = model.diagnostics.get("calibration")
+    if cal and cal.get("instruments"):
+        worst = max(cal["instruments"], key=lambda f: abs(f["vol_error"] / f["market_vol"])
+                    if np.isfinite(f["vol_error"]) else np.inf)
+        rel = abs(worst["vol_error"] / worst["market_vol"])
+        if not rel <= CALIBRATION_TOLERANCE:
+            out["warnings"].append(
+                f"[WARNING] model: calibration misses the {worst['expiry']}x{worst['tenor']} swaption by {rel:.1%} of "
+                f"its vol (market {worst['market_vol']:.5f}, model {worst['model_vol']:.5f}). Constant-parameter "
+                "Hull-White 1F cannot fit every swaption: check that the calibration instruments are the ones that "
+                "drive the trade (coterminal for a Bermudan call), or let mean_reversion float.")
     if out.get("cross_check") and not out["cross_check"]["agrees"]:
         out["warnings"].append("[WARNING] Monte Carlo and analytic prices differ by more than 4 std errors")
     out["timings_sec"] = timings
     return out
 
 
+CALIBRATION_TOLERANCE = 0.05   # worst relative vol miss of a calibration instrument before warning
 FIT_SEED_OFFSET = 1_000_003      # seed of the independent exercise-fit paths: pricing.seed + this
 
 

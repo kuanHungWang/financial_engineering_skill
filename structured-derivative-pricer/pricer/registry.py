@@ -1,6 +1,6 @@
 """Component registry: the factory side of the design.
 
-Each component kind (curve, vol, schedule, model, observable, leg, condition, event, analytic) maps a
+Each component kind (curve, vol, swaption_vol, schedule, model, observable, leg, condition, event, analytic) maps a
 `type` string to a factory class. A factory class declares:
 
     Spec         pydantic model of its input fields (extra fields forbidden)
@@ -20,7 +20,7 @@ from pydantic import BaseModel, ConfigDict, ValidationError
 
 from .conventions import suggest
 
-KINDS = ("curve", "vol", "schedule", "model", "observable", "leg", "condition", "event", "analytic")
+KINDS = ("curve", "vol", "swaption_vol", "schedule", "model", "observable", "leg", "condition", "event", "analytic")
 
 _REGISTRY: dict[str, dict[str, type]] = {k: {} for k in KINDS}
 
@@ -92,4 +92,6 @@ def catalog(kind: str | None = None) -> dict:
                 "fields": schema.get("properties", {}),
                 "required": schema.get("required", []),
             }
+            if "$defs" in schema:       # nested blocks referenced by "$ref" in fields
+                out[k][name]["definitions"] = schema["$defs"]
     return out
