@@ -79,8 +79,14 @@ After that, run every command below as `$PY <skill_dir>/scripts/price.py ...`.
 - Conventions (calendars, day counts, schedules, index definitions) come from QuantLib. Name the index with
   `quantlib_index` (Sofr, Euribor, EuriborSwapIsdaFixA, ...) when QuantLib has it. Give custom fields only for
   indices QuantLib lacks, and take them from the term sheet.
-- Past fixings (e.g. the first in-advance fixing at inception) go in the observable's `history`. Ask the
-  user for them; never invent them.
+- Past fixings go in a **fixings file** (`fixings: fixings.yaml`; `equities` closes by underlying, `rates` by
+  name), shared by trades and appended over time. Inline `trade.history` / observable `history` also work
+  and win date by date. This covers the first in-advance fixing at inception and every fixing of a **seasoned
+  trade** (priced after its trade date, e.g. mid-period with part of a range accrual or a compounded rate
+  already fixed). Ask the user for them; never invent them. Write a trade spec once, with an explicit
+  `effective_date`: it then prices at any date of its life by changing only `valuation_date` and the market
+  data. A TARN recomputes its paid coupons from their past fixings; if those are not available, ask the user
+  for the amount already paid and give it as `accumulated`.
 
 ## Reading the result
 
@@ -130,6 +136,9 @@ Masks:
 - trade-level `bermudan_call`: issuer call / holder put / cancellation / Bermudan option on a schedule, priced
   by Longstaff-Schwartz (callable and puttable bonds, cancellable swaps, Bermudan options).
 
+Seasoned trades: priced after inception, between payment dates. Every payoff reads dates before the valuation
+date from history and later dates from the simulation (see "Seasoned trades" in components.md).
+
 Closed forms: European vanilla (BSM, Heston) and single continuous barrier (BSM).
 
 Not yet supported, so say so rather than approximating:
@@ -139,8 +148,7 @@ Not yet supported, so say so rather than approximating:
 - FX / quanto / multi-currency,
 - snowball / memory coupons,
 - digital coupons other than range accrual,
-- historical barrier fixings for seasoned trades (past barrier observation dates are ignored with a warning;
-  past rate / range fixings are supported through `history`),
+- past monitoring of a `continuous` barrier (closed forms only look forward from today),
 - custom payoff code (planned: a bridge for AI-written payoff components).
 
 ## Extending (for developers, not during a pricing task)
@@ -148,7 +156,10 @@ Not yet supported, so say so rather than approximating:
 Each component is a class registered with `@register(kind, type)` and a pydantic `Spec`
 (`pricer/registry.py`). A new observable, leg, condition, event, model or analytic pricer needs one class.
 Legs and observables read the market only through `models.Scenario` (equity paths, `discount`, `bond`,
-`growth`), so they work under every model. Validation,
+`growth`), so they work under every model. Legs, conditions and events go one step further: they read only
+through observables (`p.obs(name, dates)`, an underlying by its name) and declare their dates only through
+`obs.requirements`. That is what makes past fixings work for any payoff: history for past dates, simulation for
+later ones, one validation of the missing dates. A test enforces it. Validation,
 the catalog and the graph pick it up automatically. Add a regression test in `tests/` against a
 closed form or a limiting case. Run the suite with `$PY -m pytest <skill_dir>/tests -q`.
 

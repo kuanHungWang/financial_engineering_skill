@@ -1,0 +1,51 @@
+# SEASONED trade: a 6M SPX range-accrual note traded on 2026-07-28, valued on 2026-09-28, between its
+# two coupon dates. Investor's view, notional 1,000,000.
+#   - coupon 6% p.a. x (NYSE days with SPX within 95%..105% of initial) / (NYSE days), Actual/360,
+#     paid 2026-10-28 and 2027-01-28. Two months of the first period's daily fixings are already
+#     known; the rest of that period and the whole second period are simulated.
+#   - par at maturity, minus a short down-and-in put (KI 75%, every NYSE close since inception):
+#     the barrier dates already passed are read from history, so a past touch keeps the put knocked in.
+#   - initial level = the SPX close on the effective date, read from the fixings
+#     (or give trade.reference_levels explicitly).
+# Past closes come from the shared fixings file (MOCK values, like the market data). The same file prices
+# this trade at any date of its life: change only valuation_date (and the market data). Validation lists
+# any observation date before the valuation date that has no fixing.
+valuation_date: 2026-09-28
+market_data: market/mock_market.yaml
+fixings: fixings/mock_fixings.yaml       # past closes, appended daily; the trade itself never changes
+
+model: {type: black_scholes, underlying: SPX, discount_curve: USD}
+
+observables:
+  SPX_PERF: {type: equity, underlying: SPX, mode: performance}   # history is given as levels
+
+schedules:
+  coupon_dates: {type: dates, dates: [2026-10-28, 2027-01-28]}
+  daily: {type: generated, frequency: 1D, calendar: UnitedStates.NYSE, include_start: true}
+
+trade:
+  id: RA-SPX-6M-SEASONED
+  effective_date: 2026-07-28
+  maturity: 2027-01-28
+  legs:
+    - id: range_coupon
+      type: range_accrual
+      rate: 0.06
+      notional: 1000000
+      schedule: coupon_dates
+      day_count: Actual360
+      observation_calendar: UnitedStates.NYSE
+      range:
+        - {observable: SPX_PERF, lower: 0.95, upper: 1.05}
+    - {id: principal, type: fixed_amount, amount: 1000000, payment_date: maturity}
+    - id: short_dip
+      type: option_payoff
+      underlying: SPX
+      option_type: put
+      strike: 1.0
+      notional: 1000000
+      position: short
+      conditions:
+        - {type: knock_in, underlying: SPX, direction: down, barrier: 0.75, observation: daily}
+
+pricing: {num_paths: 20000, seed: 7}

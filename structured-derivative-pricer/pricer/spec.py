@@ -52,7 +52,12 @@ class TradeSpec(SpecModel):
     business_day_convention: str = Field("ModifiedFollowing", description="for dates given as tenors")
     reference_levels: dict[str, float] = Field(
         default_factory=dict,
-        description="initial fixing per underlying for relative strikes/barriers; default is today's spot")
+        description="initial fixing per underlying for relative strikes/barriers; default: trade.history on "
+                    "effective_date, else today's spot")
+    history: dict[str, dict[dt.date, float]] = Field(
+        default_factory=dict,
+        description="past closing levels per model underlying {UNDERLYING: {YYYY-MM-DD: level}}, read for every "
+                    "observation date before the valuation date (barriers, ranges, autocalls of a seasoned trade)")
     legs: list[dict] = Field(min_length=1)
     termination_events: list[dict] = Field(default_factory=list)
 
@@ -66,6 +71,9 @@ class PricingInput(SpecModel):
     observables: dict[str, dict] = Field(
         default_factory=dict, description="named observables (rates, spreads, baskets, worst-of) read by legs, "
                                           "ranges and barriers; model underlyings are usable by name without one")
+    fixings: Union[str, dict, None] = Field(
+        None, description="past fixings shared by trades: path to a fixings YAML/JSON (relative to this file) or the "
+                          "document inline; inline `history` in the trade wins date by date")
     trade: TradeSpec
     pricing: PricingSettings = Field(default_factory=PricingSettings)
 
@@ -76,6 +84,16 @@ class EquityData(SpecModel):
                            description="a curve spec (flat/zero) for the continuous dividend yield")
     vol: dict = Field(description="a vol spec: constant / term / surface")
     calendar: str = "WeekendsOnly"
+
+
+class FixingsData(SpecModel):
+    """Past fixings, appended as the market moves; the same file serves every trade and every valuation date.
+    Dates on or after a run's valuation date are ignored by that run."""
+    equities: dict[str, dict[dt.date, float]] = Field(
+        default_factory=dict, description="closing levels by underlying name {SPX: {YYYY-MM-DD: level}}")
+    rates: dict[str, dict[dt.date, float]] = Field(
+        default_factory=dict, description="rate fixings by name {SOFR: {YYYY-MM-DD: 0.0431}}; a rate observable "
+                                          "reads the entry of its `fixings_key` (default: its own name)")
 
 
 class MarketData(SpecModel):

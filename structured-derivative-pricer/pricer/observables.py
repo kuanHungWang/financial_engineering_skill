@@ -13,10 +13,12 @@ is the same on every path (a forward rate under an equity model with determinist
 Every model underlying is also an observable under its own name (its level), so `SPX` works
 without a declaration. Rate observables are read from the model: stochastic under hull_white,
 deterministic forwards of today's curve under the equity models. Fixing dates before the
-valuation date are read from the observable's `history`.
+valuation date are read from the observable's `history` (equity: closing levels, also from
+trade.history), so a seasoned trade mixes known fixings with simulated ones.
 """
 from __future__ import annotations
 
+import contextlib
 import datetime as dt
 from typing import Literal
 
@@ -68,45 +70,91 @@ def require_stochastic(v, name, path, what) -> bool:
 
 
 def requirements(v, name, dates) -> dict:
-    """Simulation state needed to evaluate `name` on the future dates among `dates`."""
+    """Simulation state needed to evaluate `name` on the future dates among `dates`.
+
+    This is the one place a component declares what it reads. Dates before the valuation date are not
+    simulated: they are recorded in v.past_reads (leaf observable -> reader path -> dates) and served
+    from history by `evaluate`, whatever the component. `check_history` then validates them all at once."""
     cls, spec = lookup(v, name)
-    future = sorted({d for d in dates if d >= v.valuation_date})
-    if not future:
-        return {}
     if not cls.is_leaf:
         out = {}
         for n in cls.deps(spec):
-            for k, ds in requirements(v, n, future).items():
+            for k, ds in requirements(v, n, dates).items():
                 out.setdefault(k, set()).update(ds)
         return {k: sorted(ds) for k, ds in out.items()}
-    return cls.requirements(spec, v, future)
+    past = {d for d in dates if d < v.valuation_date}
+    if past:
+        v.past_reads.setdefault(name, {}).setdefault(v.reader, set()).update(past)
+    future = sorted({d for d in dates if d >= v.valuation_date})
+    return cls.requirements(spec, v, future) if future else {}
 
 
-def check_fixings(v, name, dates, path) -> bool:
-    """Past fixing dates must be covered by `history` of every leaf the observable depends on."""
+@contextlib.contextmanager
+def reading(v, path, sticky=False):
+    """Attribute the reads declared inside the block to `path` (for error messages). A sticky reader keeps its
+    attribution through nested blocks, e.g. a TARN re-reading a leg's paid coupons."""
+    before = (v.reader, v.reader_sticky)
+    if not v.reader_sticky:
+        v.reader, v.reader_sticky = path, sticky
+    try:
+        yield
+    finally:
+        v.reader, v.reader_sticky = before
+
+
+def source(spec) -> str:
+    """The observable a component spec reads: its `underlying` (an underlying is the observable of its own
+    name) or its `observable`. Barriers, options and exercise options take exactly one of the two."""
+    return spec.underlying if spec.underlying is not None else spec.observable
+
+
+def past_value(v, cls, spec, d):
+    """Known fixing of a leaf observable on a past date d, or None. Equity history holds levels: an
+    equity observable's own `history`, else trade.history of its underlying."""
+    if hasattr(cls, "past_value"):
+        return cls.past_value(spec, v, d)
+    return getattr(spec, "history", {}).get(d)
+
+
+def missing_history(v, name, dates) -> list:
+    """Past dates among `dates` on which `name` (or a leaf it depends on) has no known fixing."""
     cls, spec = lookup(v, name)
-    past = sorted({d for d in dates if d < v.valuation_date})
-    if not past:
-        return True
     if not cls.is_leaf:
-        return all([check_fixings(v, n, past, path) for n in cls.deps(spec)])
-    missing = [d for d in past if d not in getattr(spec, "history", {})]
-    if missing:
-        where = f"observables.{name}.history" if name in v.observables else \
-            f"a declared observable with `history` (e.g. {{type: equity, underlying: {name}, history: ...}})"
-        v.report.error(path, f"observable '{name}' needs {len(missing)} past fixing(s) before the valuation date "
-                             f"(first {missing[0]}, last {missing[-1]})",
-                       f"give them in {where} as {{YYYY-MM-DD: value}}")
-        return False
-    return True
+        return sorted({d for n in cls.deps(spec) for d in missing_history(v, n, dates)})
+    return sorted(d for d in dates if d < v.valuation_date and past_value(v, cls, spec, d) is None)
+
+
+def check_history(v):
+    """Report, per reader, every past fixing date recorded by `requirements` that history does not cover."""
+    for name, readers in v.past_reads.items():
+        cls, spec = lookup(v, name)
+        if cls is EquityObs:
+            where = f"the fixings file under equities.{spec.underlying}, or trade.history.{spec.underlying}"
+            what = "closing level"
+        else:
+            key = getattr(spec, "fixings_key", None) or name
+            where = f"the fixings file under rates.{key}, or observables.{name}.history"
+            what = "fixing"
+        for path, dates in readers.items():
+            missing = missing_history(v, name, dates)
+            if missing:
+                v.report.error(path, f"'{name}' needs {len(missing)} past {what}(s) before the valuation date "
+                                     f"(first {missing[0]}, last {missing[-1]})",
+                               f"give them in {where} as {{YYYY-MM-DD: value}}")
 
 
 def evaluate(p, name, dates) -> np.ndarray:
     """Values on `dates` (any order): shape (len(dates), n_paths) or (len(dates), 1)."""
-    v = p.v
-    cls, spec = lookup(v, name)
+    cls, spec = lookup(p.v, name)
     if not cls.is_leaf:
         return cls.combine(spec, [evaluate(p, n, dates) for n in cls.deps(spec)])
+    return evaluate_leaf(p, cls, spec, dates)
+
+
+def evaluate_leaf(p, cls, spec, dates) -> np.ndarray:
+    """A leaf's values: simulated on dates >= the valuation date, known fixings before it. With only past
+    dates no simulation is read, so validation can evaluate history with a context whose scenario is None."""
+    v = p.v
     dates = list(dates)
     fut = [d for d in dates if d >= v.valuation_date]
     fvals = cls.values(spec, p, fut) if fut else np.zeros((0, 1))
@@ -119,7 +167,7 @@ def evaluate(p, name, dates) -> np.ndarray:
             out[i] = fvals[j]
             j += 1
         else:
-            out[i] = spec.history[d]
+            out[i] = past_value(v, cls, spec, d)
     return out
 
 
@@ -191,11 +239,16 @@ class _Leaf(SpecModel):
 class EquityObs(ObservableFactory):
     description = ("A simulated underlying: `level` is the price S_t; `performance` is S_t / S_ref "
                    "(S_ref = trade.reference_levels, default today's spot). Every model underlying is also "
-                   "usable by name as its level without declaring it.")
+                   "usable by name as its level without declaring it. Past closing levels come from `history` "
+                   "or, shared by every observable of the underlying, from trade.history.")
 
     class Spec(_Leaf):
         underlying: str
         mode: Literal["level", "performance"] = "level"
+        history: dict[dt.date, float] = Field(
+            default_factory=dict, description="past values of THIS observable {YYYY-MM-DD: x}, in its own units: a "
+                                              "level, or S/S_ref in performance mode. Usually closing levels are "
+                                              "given once per underlying (fixings file / trade.history) instead")
 
     @staticmethod
     def validate(spec, v, path):
@@ -203,6 +256,9 @@ class EquityObs(ObservableFactory):
             v.report.error(path + ".underlying",
                            f"underlying '{spec.underlying}' is not simulated by the model."
                            f"{cv.suggest(spec.underlying, v.underlyings)}", f"model underlyings: {v.underlyings}")
+        bad = sorted(d for d, x in spec.history.items() if not x > 0)
+        if bad:
+            v.report.error(path + ".history", f"equity {spec.mode}s must be > 0 ({len(bad)} bad, first {bad[0]})")
 
     @staticmethod
     def stochastic(spec, v):
@@ -216,6 +272,17 @@ class EquityObs(ObservableFactory):
     def values(spec, p, dates):
         x = p.scenario.equity[spec.underlying].loc[list(dates)].values
         return x / p.v.reference_levels[spec.underlying] if spec.mode == "performance" else x
+
+    @staticmethod
+    def past_value(spec, v, d):
+        """Own history as given (the observable's units, like any observable's history); else the underlying's
+        closing level from the fixings file / trade.history, divided by S_ref in performance mode."""
+        if d in spec.history:
+            return spec.history[d]
+        x = v.history.get(spec.underlying, {}).get(d)
+        if x is None:
+            return None
+        return x / v.reference_levels[spec.underlying] if spec.mode == "performance" else x
 
 
 # Rate observables delegate every convention (value date, index maturity, end-of-month, day count,
@@ -234,6 +301,8 @@ _NO_CURVE = ql.YieldTermStructureHandle()
 
 class _RateSpec(_Leaf):
     curve: str = Field(description="market curve the index is projected from")
+    fixings_key: str | None = Field(
+        None, description="entry of the fixings file's `rates` this index reads (default: the observable's name)")
     quantlib_index: str | None = Field(
         None, description="use a QuantLib index's conventions instead of the custom fields below")
 

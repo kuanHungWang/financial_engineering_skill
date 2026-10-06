@@ -52,19 +52,18 @@ class VCtx:
     model_name: str = ""
     curve_names: set = field(default_factory=set)        # market curves
     legs: dict = field(default_factory=dict)             # leg id -> (factory, spec)
+    history: dict = field(default_factory=dict)          # underlying -> {date: past closing level}
+    past_reads: dict = field(default_factory=dict)       # leaf observable -> reader path -> past dates read
+    reader: str = ""                                     # path of the component declaring its reads
+    reader_sticky: bool = False                          # nested reading() blocks keep `reader`
+    target_paid: dict = field(default_factory=dict)      # target event id -> coupons paid before valuation
 
     def level(self, value, mode, und):
         return value * self.reference_levels[und] if mode == "relative" else value
 
-    def future_obs(self, name, path):
-        """Observation dates >= valuation date; warns once when past dates are dropped."""
-        ds = self.schedules[name]
-        past = [d for d in ds if d < self.valuation_date]
-        if past:
-            self.report.warning(path, f"{len(past)} observation date(s) of schedule '{name}' are before the "
-                                      "valuation date and are ignored (historical barrier fixings are not supported yet)",
-                                "confirm the barrier was not already hit on those dates")
-        return [d for d in ds if d >= self.valuation_date]
+    def future_obs(self, name):
+        """Observation dates >= valuation date."""
+        return [d for d in self.schedules[name] if d >= self.valuation_date]
 
 
 @dataclass
@@ -74,12 +73,10 @@ class PCtx:
     scenario: object            # models.Scenario (None for purely deterministic legs)
     n_paths: int
 
-    @property
-    def fixings(self):
-        return self.scenario.equity
-
     def obs(self, name, dates) -> np.ndarray:
-        """Observable values, broadcast to (len(dates), n_paths)."""
+        """Observable values, broadcast to (len(dates), n_paths): the only way a component reads the market
+        on a date. Past dates come from history, later ones from the simulation. A model underlying is an
+        observable under its own name (its level)."""
         x = obs.evaluate(self, name, dates)
         return np.broadcast_to(x, (len(dates), self.n_paths))
 
@@ -200,15 +197,21 @@ class Trigger:
 
     @staticmethod
     def requirements(spec, v: VCtx, dates) -> dict:
-        if spec.underlying is not None:
-            return {spec.underlying: list(dates)} if dates else {}
-        return obs.requirements(v, spec.observable, dates)
+        return obs.requirements(v, obs.source(spec), dates)
 
     @staticmethod
     def values(spec, p: PCtx, dates) -> np.ndarray:
-        if spec.underlying is not None:
-            return p.fixings[spec.underlying].loc[list(dates)].values
-        return p.obs(spec.observable, dates)
+        return p.obs(obs.source(spec), dates)
+
+    @classmethod
+    def past_hits(cls, spec, v: VCtx, dates) -> list:
+        """Past observation dates on which the barrier was breached; [] while history is incomplete (the
+        missing dates are reported by the central history check)."""
+        past = [d for d in dates if d < v.valuation_date]
+        if not past or obs.missing_history(v, obs.source(spec), past):
+            return []
+        hits = _breach(cls.values(spec, PCtx(v, None, 1), past)[:, 0], spec.direction, cls.level(spec, v))
+        return [d for d, h in zip(past, hits) if h]
 
     @classmethod
     def first_hit(cls, spec, p: PCtx, dates):
@@ -233,6 +236,10 @@ class BarrierCondition:
     def validate(cls, spec, v: VCtx, path):
         if not Trigger.validate(spec, v, path):
             return
+        if spec.observation == CONTINUOUS and v.dates.resolve("effective_date") < v.valuation_date:
+            v.report.warning(path + ".observation", "continuous monitoring of a seasoned trade only looks "
+                                                    "forward from today",
+                             "confirm the barrier was not hit before the valuation date")
         if spec.observation != CONTINUOUS and v.valuation_date not in v.schedules[spec.observation]:
             return
         if Trigger.spot_breached(spec, v):
@@ -241,19 +248,20 @@ class BarrierCondition:
                                    + (" (monitoring includes today)" if spec.observation != CONTINUOUS else ""))
 
     @staticmethod
-    def obs_dates(spec, v: VCtx, until, path):
-        return [d for d in v.future_obs(spec.observation, path) if d <= until]
+    def obs_dates(spec, v: VCtx, until):
+        """Observation dates up to `until`, past ones included: a hit before the valuation date counts."""
+        return [d for d in v.schedules[spec.observation] if d <= until]
 
     @classmethod
     def fixing_dates(cls, spec, v: VCtx, path, until):
         if spec.observation == CONTINUOUS:
             return {}
-        return Trigger.requirements(spec, v, cls.obs_dates(spec, v, until, path))
+        return Trigger.requirements(spec, v, cls.obs_dates(spec, v, until))
 
     @classmethod
     def masks(cls, spec, p: PCtx, cutoffs, path):
         """Per cut-off date, per path: does the cashflow survive this condition? Plus P(hit by last cut-off)."""
-        hit = Trigger.first_hit(spec, p, cls.obs_dates(spec, p.v, max(cutoffs), path))
+        hit = Trigger.first_hit(spec, p, cls.obs_dates(spec, p.v, max(cutoffs)))
         out = []
         for c in cutoffs:
             hit_by_c = ~np.isnat(hit) & (hit <= np.datetime64(c, "D"))
@@ -296,8 +304,11 @@ def validate_conditions(spec, v: VCtx, path, last_cutoff):
 
 
 def conditions_requirements(spec, v: VCtx, path, last_cutoff) -> dict:
-    return merge_requirements(*[ccls.fixing_dates(cspec, v, cpath, last_cutoff)
-                                for ccls, cspec, cpath in parsed_conditions(spec, v.report, path)])
+    reqs = []
+    for ccls, cspec, cpath in parsed_conditions(spec, v.report, path):
+        with obs.reading(v, cpath + (".underlying" if getattr(cspec, "underlying", None) else ".observable")):
+            reqs.append(ccls.fixing_dates(cspec, v, cpath, last_cutoff))
+    return merge_requirements(*reqs)
 
 
 def apply_conditions(spec, p: PCtx, path, amounts: np.ndarray, cutoffs, diag) -> np.ndarray:
@@ -366,9 +377,9 @@ class OptionPayoff(LegFactory):
             obs.require_stochastic(v, spec.observable, path + ".observable", "an option")
         exp = _resolve_date(v, spec.expiry, path + ".expiry")
         pay = _resolve_date(v, spec.payment_date, path + ".payment_date") if spec.payment_date else exp
-        if exp and exp <= v.valuation_date:
-            v.report.error(path + ".expiry", f"expiry {exp} is not after the valuation date {v.valuation_date}",
-                           "expired legs have no value to simulate; remove the leg")
+        if pay and pay <= v.valuation_date:
+            v.report.error(path + ".payment_date", f"paid on {pay}, not after the valuation date {v.valuation_date}",
+                           "a paid leg has no value left; remove it")
         if exp and pay and pay < exp:
             v.report.error(path + ".payment_date", f"payment date {pay} is before expiry {exp}")
         if exp and exp > v.maturity:
@@ -383,7 +394,7 @@ class OptionPayoff(LegFactory):
     @classmethod
     def fixing_dates(cls, spec, v: VCtx, path):
         exp, _ = cls.dates(spec, v)
-        own = {spec.underlying: [exp]} if spec.underlying else obs.requirements(v, spec.observable, [exp])
+        own = obs.requirements(v, obs.source(spec), [exp])
         return merge_requirements(own, conditions_requirements(spec, v, path, exp))
 
     @classmethod
@@ -401,7 +412,7 @@ class OptionPayoff(LegFactory):
     @classmethod
     def cashflows(cls, spec, p: PCtx, path):
         exp, pay = cls.dates(spec, p.v)
-        x_t = p.fixings[spec.underlying].loc[exp].values if spec.underlying else p.obs(spec.observable, [exp])[0]
+        x_t = p.obs(obs.source(spec), [exp])[0]
         units, k = cls.unit_scale(spec, p.v)
         phi = 1.0 if spec.option_type == "call" else -1.0
         amount = units * np.maximum(phi * (x_t - k), 0.0)
@@ -476,6 +487,10 @@ class KnockOutEvent(EventFactory):
         if spec.observation != CONTINUOUS and not [d for d in obs_dates if d >= v.valuation_date]:
             v.report.error(path + ".observation", f"schedule '{spec.observation}' has no dates on/after the "
                                                   "valuation date")
+        if spec.observation == CONTINUOUS and v.dates.resolve("effective_date") < v.valuation_date:
+            v.report.warning(path + ".observation", "continuous monitoring of a seasoned trade only looks forward "
+                                                    "from today", "confirm the barrier was not hit before the "
+                                                                  "valuation date")
         if spec.rebate and spec.settle_on_event_date and spec.observation != CONTINUOUS:
             redemptions = set()
             for c, s in v.legs.values():
@@ -490,10 +505,23 @@ class KnockOutEvent(EventFactory):
                                  "if the rebate is the redemption, drop that date from the observation schedule")
 
     @staticmethod
+    def validate_past(spec, v: VCtx, path, reads):
+        """After the central history check: a hit before the valuation date means the trade is over."""
+        if spec.observation == CONTINUOUS:
+            return
+        hits = Trigger.past_hits(spec, v, v.schedules[spec.observation])
+        if hits:
+            v.report.error(path, f"the barrier was already hit on {hits[0]} (before the valuation date): the "
+                                 "trade terminated then and has no remaining value to simulate",
+                           "check trade.history / the observable's history and the barrier level; price only "
+                           "what is still owed (e.g. an unpaid rebate) as fixed_amount legs")
+
+    @staticmethod
     def fixing_dates(spec, v: VCtx, path):
         if spec.observation == CONTINUOUS:
             return {}
-        return Trigger.requirements(spec, v, v.future_obs(spec.observation, path))
+        with obs.reading(v, path + (".underlying" if spec.underlying else ".observable")):
+            return Trigger.requirements(spec, v, v.schedules[spec.observation])
 
     @staticmethod
     def payment_dates(spec, v: VCtx):
@@ -501,11 +529,11 @@ class KnockOutEvent(EventFactory):
             return []
         if spec.rebate_payment == "at_maturity":
             return [v.maturity]
-        return v.future_obs(spec.observation, "") if spec.observation != CONTINUOUS else []
+        return v.future_obs(spec.observation) if spec.observation != CONTINUOUS else []
 
     @staticmethod
     def evaluate(spec, p: PCtx, path, legs):
-        dates = p.v.future_obs(spec.observation, path)
+        dates = p.v.future_obs(spec.observation)     # validation rejects a hit on a past date
         hit_date = Trigger.first_hit(spec, p, dates)
         any_hit = ~np.isnat(hit_date)
         date_arr = np.array(dates, dtype="datetime64[D]")
@@ -539,6 +567,23 @@ class TargetEvent(EventFactory):
         crossing_coupon: Literal["capped", "full", "none"] = "capped"
         rebate: float = Field(0.0, description="cash paid on an early termination date (not at maturity)")
         guaranteed: bool = False
+        accumulated: float | None = Field(
+            None, ge=0, description="override: coupons of `legs` already paid on or before the valuation date (cash). "
+                                    "Default: computed from the legs' past fixings, which history must then cover")
+
+    @staticmethod
+    def paid_legs(spec, v: VCtx):
+        """(leg factory, leg spec, leg path, paid periods) of each accumulated leg with coupons paid on or before
+        the valuation date."""
+        out = []
+        for lid in spec.legs:
+            if lid not in v.legs or not hasattr(v.legs[lid][0], "paid_periods"):
+                continue
+            c, s = v.legs[lid]
+            paid = c.paid_periods(s, v)
+            if paid:
+                out.append((c, s, f"trade.legs[{list(v.legs).index(lid)}]", paid))
+        return out
 
     @staticmethod
     def validate(spec, v: VCtx, path):
@@ -551,7 +596,45 @@ class TargetEvent(EventFactory):
 
     @staticmethod
     def fixing_dates(spec, v, path):
-        return {}
+        """The paid coupons are recomputed by their own legs, so their past fixings are read like any other."""
+        if spec.accumulated is not None:
+            return {}
+        reqs = []
+        for c, s, lpath, paid in TargetEvent.paid_legs(spec, v):
+            with obs.reading(v, f"{path}.legs[{spec.legs.index(s.id)}] (coupons paid before the valuation date)",
+                             sticky=True):
+                reqs.append(c.fixing_dates(s, v, lpath, pers=paid))
+        return merge_requirements(*reqs)
+
+    @staticmethod
+    def paid_amount(spec, p: PCtx):
+        """Coupons of `legs` paid on or before the valuation date, per path (one value unless a payment on the
+        valuation date reads a fixing of that date, which is simulated)."""
+        if spec.accumulated is not None:
+            return np.full(1, spec.accumulated)
+        if spec.id in p.v.target_paid:          # known from history alone: computed once, at validation
+            return p.v.target_paid[spec.id]
+        total = np.zeros(1)
+        for c, s, lpath, paid in TargetEvent.paid_legs(spec, p.v):
+            lr = c.cashflows(s, p, lpath, pers=paid)
+            total = total + lr.amounts.values.sum(axis=0) * lr.sign
+        return total
+
+    @staticmethod
+    def validate_past(spec, v: VCtx, path, reads):
+        """After the central history check (`reads`: this event's simulation needs from it): a target already
+        reached means the trade is over. A paid amount known from history alone is cached for pricing."""
+        if spec.accumulated is None:
+            if reads:
+                return      # a paid coupon reads a fixing of the valuation date: only known after simulation
+            if any(cspec.observation == CONTINUOUS for c, s, lpath, _ in TargetEvent.paid_legs(spec, v)
+                   for _, cspec, _ in parsed_conditions(s, v.report, lpath)):
+                return      # not priceable by simulation; the method selection reports it
+            v.target_paid[spec.id] = TargetEvent.paid_amount(spec, PCtx(v, None, 1))
+        paid = float(TargetEvent.paid_amount(spec, PCtx(v, None, 1))[0])
+        if paid >= spec.target * (1 - 1e-12):
+            v.report.error(path, f"coupons paid by the valuation date ({paid:,.2f}) already reach the target "
+                                 f"{spec.target:,.2f}: the trade has terminated")
 
     @staticmethod
     def payment_dates(spec, v: VCtx):
@@ -575,7 +658,8 @@ class TargetEvent(EventFactory):
         for d, lid, i in rows:
             lr = legs[lid]
             gross[pos[d]] += lr.amounts.iloc[i].values * lr.sign
-        cum = np.cumsum(gross, axis=0)
+        paid = TargetEvent.paid_amount(spec, p)
+        cum = paid + np.cumsum(gross, axis=0)
         reach = cum >= spec.target * (1 - 1e-12)
         any_hit = reach.any(axis=0)
         first = reach.argmax(axis=0)
@@ -583,7 +667,7 @@ class TargetEvent(EventFactory):
         hit_date = np.where(any_hit, date_arr[first], NAT)
         cols = np.arange(n)
         crossing = gross[first, cols]
-        before = np.where(first > 0, cum[np.maximum(first - 1, 0), cols], 0.0)
+        before = np.where(first > 0, cum[np.maximum(first - 1, 0), cols], paid)
         if spec.crossing_coupon == "full":
             scale = np.ones(n)
         elif spec.crossing_coupon == "none":

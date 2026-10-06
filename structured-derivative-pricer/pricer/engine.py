@@ -41,7 +41,7 @@ from .models import build_underlying
 from .observables import RATES
 from .payoffs import CONTINUOUS, PCtx, VCtx, merge_requirements, parsed_conditions
 from .schedules import DateContext
-from .spec import MarketData, PricingInput
+from .spec import FixingsData, MarketData, PricingInput
 
 
 # ------------------------------------------------------------------ data holders
@@ -100,6 +100,8 @@ class Plan:
         if self.method == "mc":
             out["simulation"] = {
                 "fixing_dates": {u: len(d) for u, d in self.sim_dates.items()},
+                "past_fixings_from_history": {n: len(set().union(*r.values()))
+                                              for n, r in sorted(self.v.past_reads.items())} if self.v else {},
                 "payment_dates": len(self.pay_dates),
                 "estimated_memory_mb": round(self.memory_mb, 1),
             }
@@ -168,6 +170,23 @@ def build_plan(raw: dict, base_dir: Path | str = ".") -> Plan:
     plan.market = market
     if market.as_of != val:
         rep.warning("market_data.as_of", f"market data as_of {market.as_of} differs from valuation_date {val}")
+
+    # 2b. past fixings shared by trades (a file appended over the trade's life)
+    fixings = FixingsData()
+    fraw = inp.fixings
+    if isinstance(fraw, str):
+        fpath = base_dir / fraw
+        if not fpath.exists():
+            rep.error("fixings", f"fixings file not found: {fpath}",
+                      "put the file next to the input, pass an absolute path, or inline the document")
+            return plan
+        fraw = yaml.safe_load(fpath.read_text()) or {}
+    if fraw is not None:
+        try:
+            fixings = FixingsData.model_validate(fraw)
+        except ValidationError as e:
+            rep.extend_pydantic("fixings", e)
+            return plan
 
     # 3. trade dates
     cal_conv = (inp.trade.calendar, inp.trade.business_day_convention)
@@ -244,18 +263,52 @@ def build_plan(raw: dict, base_dir: Path | str = ".") -> Plan:
                 if c in market.curves:
                     need_curve(c, f"observables.{name}.curve")
 
-    # 5. reference levels
+    # rate observables take the fixings file's entry; their own history wins date by date
+    for name, (ocls, ospec) in parsed_obs.items():
+        if hasattr(ospec, "fixings_key"):
+            shared = fixings.rates.get(ospec.fixings_key or name, {})
+            if ospec.fixings_key and ospec.fixings_key not in fixings.rates:
+                rep.warning(f"observables.{name}.fixings_key", f"no '{ospec.fixings_key}' entry in the fixings "
+                                                               f"file.{cv.suggest(ospec.fixings_key, fixings.rates)}")
+            ospec.history = {**{d: x for d, x in shared.items() if d < val}, **ospec.history}
+
+    # 5. reference levels and past underlying fixings
     for u in inp.trade.reference_levels:
         if u not in unds:
             rep.error(f"trade.reference_levels.{u}", f"'{u}' is not a model underlying ({unds})")
-    ref_levels = {u: inp.trade.reference_levels.get(u, market.equities[u].spot)
-                  for u in unds if u in market.equities}
-    if eff0 < val:
-        for u in unds:
-            if u not in inp.trade.reference_levels:
+    history = {u: {d: x for d, x in h.items() if d < val} for u, h in fixings.equities.items() if u in unds}
+    for u, h in history.items():
+        bad = sorted(d for d, x in h.items() if not x > 0)
+        if bad:
+            rep.error(f"fixings.equities.{u}", f"closing levels must be > 0 ({len(bad)} bad, first {bad[0]})")
+    for u, h in inp.trade.history.items():
+        if u not in unds:
+            rep.error(f"trade.history.{u}", f"'{u}' is not a model underlying.{cv.suggest(u, unds)}",
+                      f"model underlyings: {unds}; give rate fixings in the observable's own history")
+            continue
+        bad = sorted(d for d, x in h.items() if not x > 0)
+        if bad:
+            rep.error(f"trade.history.{u}", f"closing levels must be > 0 ({len(bad)} bad, first {bad[0]})")
+        late = sorted(d for d in h if d >= val)
+        if late:
+            rep.warning(f"trade.history.{u}", f"{len(late)} date(s) on or after the valuation date are ignored "
+                                              f"(first {late[0]}); those are simulated from today's spot")
+        history[u] = {**history.get(u, {}), **{d: x for d, x in h.items() if d < val}}
+    ref_levels = {}
+    for u in unds:
+        if u not in market.equities:
+            continue
+        if u in inp.trade.reference_levels:
+            ref_levels[u] = inp.trade.reference_levels[u]
+        elif eff0 < val and eff0 in history.get(u, {}):
+            ref_levels[u] = history[u][eff0]
+        else:
+            ref_levels[u] = market.equities[u].spot
+            if eff0 < val:
                 rep.warning(f"trade.reference_levels.{u}",
                             f"trade started {eff0} (before valuation) but no initial fixing given; using spot",
-                            "set trade.reference_levels for relative strikes/barriers of a seasoned trade")
+                            "set trade.reference_levels (or trade.history on effective_date) for relative "
+                            "strikes/barriers of a seasoned trade")
 
     # 6. schedules (resolved in dependency order)
     sched_parsed = {}
@@ -302,7 +355,7 @@ def build_plan(raw: dict, base_dir: Path | str = ".") -> Plan:
     v = VCtx(dates, val, maturity, resolved, unds, {u: market.equities[u].spot for u in unds},
              ref_levels, rep, broken_schedules=set(sched_parsed) - set(resolved) | set(inp.schedules) - set(sched_parsed),
              observables=parsed_obs, stochastic_rates=mcls.stochastic_rates, model_name=mcls.type_name,
-             curve_names=set(market.curves))
+             curve_names=set(market.curves), history=history)
     plan.v = v
     obs.validate_all(v)
     broken_obs = set(inp.observables) - set(parsed_obs)
@@ -334,12 +387,32 @@ def build_plan(raw: dict, base_dir: Path | str = ".") -> Plan:
                   f"first one at {exercise[0]}")
     if not rep.ok:
         return plan
+
+    # 7b. what every component reads, declared through obs.requirements. Dates before the valuation date are
+    #     served from history for any payoff, so they are checked here, once, for the whole trade.
+    fixing_reqs = []
+    for cls, spec, path in legs + events:
+        with obs.reading(v, path):
+            fixing_reqs.append(cls.fixing_dates(spec, v, path))
+    obs.check_history(v)
+    if rep.ok:
+        for (cls, spec, path), reads in zip(events, fixing_reqs[len(legs):]):
+            if hasattr(cls, "validate_past"):
+                cls.validate_past(spec, v, path, reads)
+    if not rep.ok:
+        return plan
     trade = ParsedTrade(legs, conds, events, minfo)
     plan.trade = trade
 
     # 8. method selection
     settings = inp.pricing
     plan.analytic_matches = [(n, *c.match(trade)) for n, c in registry.types("analytic").items()]
+    # Closed forms start from today's spot: they cannot use known fixings, and QuantLib treats an exercise on its
+    # reference date as already expired (NPV 0), so a fixing read ON the valuation date also needs Monte Carlo.
+    blocker = ("the trade reads fixings before the valuation date" if v.past_reads else
+               _fixed_today(legs, v))
+    if blocker:
+        plan.analytic_matches = [(n, False, blocker) if ok else (n, ok, r) for n, ok, r in plan.analytic_matches]
     matching = [(n, r) for n, ok, r in plan.analytic_matches if ok]
     uses_continuous = any(s.observation == CONTINUOUS for c in conds.values() for _, s, _ in c) or \
         any(getattr(s, "observation", None) == CONTINUOUS for _, s, _ in events)
@@ -367,11 +440,9 @@ def build_plan(raw: dict, base_dir: Path | str = ".") -> Plan:
     # 9. simulation needs
     if plan.method == "mc":
         pays = set()
-        reqs = []
         for cls, spec, path in legs + events:
-            reqs.append(cls.fixing_dates(spec, v, path))
             pays.update(cls.payment_dates(spec, v))
-        plan.sim_dates = merge_requirements(*reqs)
+        plan.sim_dates = merge_requirements(*fixing_reqs)
         plan.pay_dates = sorted(pays)
         eq = [ds for k, ds in plan.sim_dates.items() if k != RATES]
         n_eq = _grid_size(set().union(*eq) | {val}, settings.steps_per_year) if eq else 0
@@ -435,6 +506,14 @@ def _scan_references(trade, v: VCtx, broken_obs):
         for key in ("observable", "index"):
             if isinstance(raw.get(key), str) and raw[key] not in broken_obs:
                 obs.known(v, raw[key], f"{path}.{key}")
+
+
+def _fixed_today(legs, v: VCtx):
+    """Reason closed forms cannot price an option leg fixed on the valuation date, or None."""
+    for cls, spec, path in legs:
+        if hasattr(cls, "dates") and cls.dates(spec, v)[0] <= v.valuation_date:
+            return f"{path} expires on the valuation date (its value is today's intrinsic)"
+    return None
 
 
 def _grid_size(dates, steps_per_year):
