@@ -93,13 +93,19 @@ def requirements(v, name, dates) -> dict:
 def reading(v, path, sticky=False):
     """Attribute the reads declared inside the block to `path` (for error messages). A sticky reader keeps its
     attribution through nested blocks, e.g. a TARN re-reading a leg's paid coupons."""
-    before = v.reader
-    if not before.endswith("!"):
-        v.reader = path + ("!" if sticky else "")
+    before = (v.reader, v.reader_sticky)
+    if not v.reader_sticky:
+        v.reader, v.reader_sticky = path, sticky
     try:
         yield
     finally:
-        v.reader = before
+        v.reader, v.reader_sticky = before
+
+
+def source(spec) -> str:
+    """The observable a component spec reads: its `underlying` (an underlying is the observable of its own
+    name) or its `observable`. Barriers, options and exercise options take exactly one of the two."""
+    return spec.underlying if spec.underlying is not None else spec.observable
 
 
 def past_value(v, cls, spec, d):
@@ -132,7 +138,7 @@ def check_history(v):
         for path, dates in readers.items():
             missing = missing_history(v, name, dates)
             if missing:
-                v.report.error(path.rstrip("!"), f"'{name}' needs {len(missing)} past {what}(s) before the valuation date "
+                v.report.error(path, f"'{name}' needs {len(missing)} past {what}(s) before the valuation date "
                                      f"(first {missing[0]}, last {missing[-1]})",
                                f"give them in {where} as {{YYYY-MM-DD: value}}")
 
@@ -240,8 +246,9 @@ class EquityObs(ObservableFactory):
         underlying: str
         mode: Literal["level", "performance"] = "level"
         history: dict[dt.date, float] = Field(
-            default_factory=dict, description="past closing LEVELS {YYYY-MM-DD: S} (also in performance mode); "
-                                              "usually given once per underlying in trade.history instead")
+            default_factory=dict, description="past values of THIS observable {YYYY-MM-DD: x}, in its own units: a "
+                                              "level, or S/S_ref in performance mode. Usually closing levels are "
+                                              "given once per underlying (fixings file / trade.history) instead")
 
     @staticmethod
     def validate(spec, v, path):
@@ -249,6 +256,9 @@ class EquityObs(ObservableFactory):
             v.report.error(path + ".underlying",
                            f"underlying '{spec.underlying}' is not simulated by the model."
                            f"{cv.suggest(spec.underlying, v.underlyings)}", f"model underlyings: {v.underlyings}")
+        bad = sorted(d for d, x in spec.history.items() if not x > 0)
+        if bad:
+            v.report.error(path + ".history", f"equity {spec.mode}s must be > 0 ({len(bad)} bad, first {bad[0]})")
 
     @staticmethod
     def stochastic(spec, v):
@@ -265,8 +275,11 @@ class EquityObs(ObservableFactory):
 
     @staticmethod
     def past_value(spec, v, d):
-        """Past closing level (own history, else trade.history), as a performance in performance mode."""
-        x = spec.history.get(d, v.history.get(spec.underlying, {}).get(d))
+        """Own history as given (the observable's units, like any observable's history); else the underlying's
+        closing level from the fixings file / trade.history, divided by S_ref in performance mode."""
+        if d in spec.history:
+            return spec.history[d]
+        x = v.history.get(spec.underlying, {}).get(d)
         if x is None:
             return None
         return x / v.reference_levels[spec.underlying] if spec.mode == "performance" else x

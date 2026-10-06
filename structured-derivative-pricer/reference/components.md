@@ -89,9 +89,11 @@ Every product is a combination of these blocks. You never write a payoff formula
     default its own name; set `fixings_key` to use a market-wide name (e.g. `USD-SOFR`).
   - Inline history wins date by date: a rate observable's `history: {YYYY-MM-DD: value}`, and
     `trade.history: {SPX: {YYYY-MM-DD: level}}` for an underlying.
-  - Equity history is closing **levels**, shared by every observable, barrier and range on that underlying,
-    also for a `performance` observable (which divides them by the reference level). An equity observable's own
-    `history` overrides it date by date.
+  - Equity history in the fixings file and `trade.history` is closing **levels**, shared by every observable,
+    barrier and range on that underlying; a `performance` observable divides them by the reference level.
+  - An observable's own `history` holds **its own values**, like a rate's: an equity observable in
+    `performance` mode takes performances (`0.97`), in `level` mode levels. It overrides the shared levels date
+    by date. All equity history must be > 0.
   - Composites (`linear`, `min_of`, `max_of`) read the history of their leaves.
 
 ### Legs
@@ -219,7 +221,14 @@ and keep appending the fixings file.
 - So any coupon, range, barrier, index formula or option payoff mixes known and simulated fixings without its
   own code. That includes a range accrual or a compounded rate in the middle of a period, a barrier already
   touched, and an option whose expiry has passed but which is not yet paid.
-- Closed forms start from today's spot, so a trade that reads a past fixing is priced by Monte Carlo.
+- Closed forms start from today's spot, so a trade that reads a past fixing, or an option that expires on the
+  valuation date (paid later), is priced by Monte Carlo.
+
+**Migration note.** Earlier versions dropped barrier observation dates before the valuation date with a
+warning ("historical barrier fixings are not supported yet"), which priced a seasoned barrier as if it could
+not have been hit. Those dates are now read like any other past fixing, so a seasoned barrier, autocall or
+knock-out trade without history fails validation with "'SPX' needs N past closing level(s)". Give the closes
+in the fixings file. A trade that reads a past fixing is priced by Monte Carlo.
 
 What is not a fixing, and so stays specific:
 

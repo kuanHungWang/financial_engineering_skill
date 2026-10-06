@@ -277,6 +277,10 @@ def build_plan(raw: dict, base_dir: Path | str = ".") -> Plan:
         if u not in unds:
             rep.error(f"trade.reference_levels.{u}", f"'{u}' is not a model underlying ({unds})")
     history = {u: {d: x for d, x in h.items() if d < val} for u, h in fixings.equities.items() if u in unds}
+    for u, h in history.items():
+        bad = sorted(d for d, x in h.items() if not x > 0)
+        if bad:
+            rep.error(f"fixings.equities.{u}", f"closing levels must be > 0 ({len(bad)} bad, first {bad[0]})")
     for u, h in inp.trade.history.items():
         if u not in unds:
             rep.error(f"trade.history.{u}", f"'{u}' is not a model underlying.{cv.suggest(u, unds)}",
@@ -284,7 +288,7 @@ def build_plan(raw: dict, base_dir: Path | str = ".") -> Plan:
             continue
         bad = sorted(d for d, x in h.items() if not x > 0)
         if bad:
-            rep.error(f"trade.history.{u}", f"levels must be > 0 (first bad date {bad[0]})")
+            rep.error(f"trade.history.{u}", f"closing levels must be > 0 ({len(bad)} bad, first {bad[0]})")
         late = sorted(d for d in h if d >= val)
         if late:
             rep.warning(f"trade.history.{u}", f"{len(late)} date(s) on or after the valuation date are ignored "
@@ -392,9 +396,9 @@ def build_plan(raw: dict, base_dir: Path | str = ".") -> Plan:
             fixing_reqs.append(cls.fixing_dates(spec, v, path))
     obs.check_history(v)
     if rep.ok:
-        for cls, spec, path in events:
+        for (cls, spec, path), reads in zip(events, fixing_reqs[len(legs):]):
             if hasattr(cls, "validate_past"):
-                cls.validate_past(spec, v, path)
+                cls.validate_past(spec, v, path, reads)
     if not rep.ok:
         return plan
     trade = ParsedTrade(legs, conds, events, minfo)
@@ -403,9 +407,12 @@ def build_plan(raw: dict, base_dir: Path | str = ".") -> Plan:
     # 8. method selection
     settings = inp.pricing
     plan.analytic_matches = [(n, *c.match(trade)) for n, c in registry.types("analytic").items()]
-    if v.past_reads:        # closed forms start from today's spot and cannot use known fixings
-        plan.analytic_matches = [(n, False, "the trade reads fixings before the valuation date") if ok else (n, ok, r)
-                                 for n, ok, r in plan.analytic_matches]
+    # Closed forms start from today's spot: they cannot use known fixings, and QuantLib treats an exercise on its
+    # reference date as already expired (NPV 0), so a fixing read ON the valuation date also needs Monte Carlo.
+    blocker = ("the trade reads fixings before the valuation date" if v.past_reads else
+               _fixed_today(legs, v))
+    if blocker:
+        plan.analytic_matches = [(n, False, blocker) if ok else (n, ok, r) for n, ok, r in plan.analytic_matches]
     matching = [(n, r) for n, ok, r in plan.analytic_matches if ok]
     uses_continuous = any(s.observation == CONTINUOUS for c in conds.values() for _, s, _ in c) or \
         any(getattr(s, "observation", None) == CONTINUOUS for _, s, _ in events)
@@ -499,6 +506,14 @@ def _scan_references(trade, v: VCtx, broken_obs):
         for key in ("observable", "index"):
             if isinstance(raw.get(key), str) and raw[key] not in broken_obs:
                 obs.known(v, raw[key], f"{path}.{key}")
+
+
+def _fixed_today(legs, v: VCtx):
+    """Reason closed forms cannot price an option leg fixed on the valuation date, or None."""
+    for cls, spec, path in legs:
+        if hasattr(cls, "dates") and cls.dates(spec, v)[0] <= v.valuation_date:
+            return f"{path} expires on the valuation date (its value is today's intrinsic)"
+    return None
 
 
 def _grid_size(dates, steps_per_year):

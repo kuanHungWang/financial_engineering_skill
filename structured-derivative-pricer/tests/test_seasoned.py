@@ -319,3 +319,41 @@ def test_components_read_the_market_only_through_observables():
     for f in ("payoffs.py", "coupons.py", "bermudan.py", "exercise.py", "analytic.py"):
         src = (ROOT / "pricer" / f).read_text()
         assert "scenario.equity" not in src and ".history[" not in src, f
+
+
+# ---------------------------------------------------------------- review regressions (PR #6)
+def test_option_expiring_on_the_valuation_date_is_its_intrinsic_not_zero():
+    """QuantLib treats an exercise on its reference date as expired (NPV 0): closed forms must not match."""
+    call = _put(option_type="call", strike=0.5, expiry=VAL.isoformat(), payment_date="2026-09-30")
+    plan = build_plan(doc([call], reference_levels={"AAA": 100.0}, maturity="2026-09-30"), EX)
+    assert plan.method == "mc" and "expires on the valuation date" in plan.method_reason
+    r = run(plan)
+    assert r["price"] == pytest.approx(N * 0.5 * df(dt.date(2026, 9, 30)), rel=1e-12)
+
+
+def test_performance_observable_history_is_in_its_own_units():
+    """An observable's own history holds its values (0.97 = 97% of initial), as before shared levels existed."""
+    perf = {"type": "equity", "underlying": "AAA", "mode": "performance",
+            "history": {d: 0.97 for d in past_days()}}
+    leg = _ra(range=[{"observable": "PERF", "lower": 0.9, "upper": 1.1}])
+    r = price(doc([leg], observables={"PERF": perf}, schedules=RA_SCHED, maturity="2027-01-29",
+                  reference_levels={"AAA": 100.0}))
+    n_days, n_past = (RA_END - START).days, len(past_days())
+    assert r["leg_diagnostics"]["ra"]["mean_accrual_fraction_by_period"][0] >= n_past / n_days - 1e-9
+
+
+def test_target_with_a_continuous_condition_reports_instead_of_crashing():
+    fixed = {"id": "cpn", "type": "fixed_leg", "rate": 0.08, "notional": N, "schedule": "q",
+             "day_count": "Actual360", "conditions": [dict(KO, observation="continuous")]}
+    d = _at(doc([fixed], [{"id": "tarn", "type": "target", "legs": ["cpn"], "target": 1e6}]))
+    assert "continuous barrier monitoring" in errors(d)["pricing.method"]
+
+
+@pytest.mark.parametrize("bad_day", [START, past_days()[5]])
+def test_fixings_file_levels_must_be_positive(bad_day):
+    ki = {"type": "knock_in", "underlying": "AAA", "direction": "down", "barrier": 0.7, "observation": "daily"}
+    fx = {"equities": {"AAA": {**{x: 100.0 for x in past_days()}, bad_day: 0.0}}}
+    assert "must be > 0" in errors(doc([_put(conditions=[ki])]) | {"fixings": fx})["fixings.equities.AAA"]
+    perf = {"type": "equity", "underlying": "AAA", "mode": "performance", "history": {bad_day: -0.1}}
+    e = errors(doc([_put()], observables={"PERF": perf}, history=flat_history(), reference_levels={"AAA": 100.0}))
+    assert "must be > 0" in e["observables.PERF.history"]

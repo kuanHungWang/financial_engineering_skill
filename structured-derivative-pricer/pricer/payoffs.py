@@ -55,6 +55,8 @@ class VCtx:
     history: dict = field(default_factory=dict)          # underlying -> {date: past closing level}
     past_reads: dict = field(default_factory=dict)       # leaf observable -> reader path -> past dates read
     reader: str = ""                                     # path of the component declaring its reads
+    reader_sticky: bool = False                          # nested reading() blocks keep `reader`
+    target_paid: dict = field(default_factory=dict)      # target event id -> coupons paid before valuation
 
     def level(self, value, mode, und):
         return value * self.reference_levels[und] if mode == "relative" else value
@@ -194,24 +196,19 @@ class Trigger:
         return bool(_breach(np.array([v.spots[spec.underlying]]), spec.direction, Trigger.level(spec, v))[0])
 
     @staticmethod
-    def source(spec):
-        """The observable the barrier reads (a model underlying by name is its level)."""
-        return spec.underlying if spec.underlying is not None else spec.observable
-
-    @staticmethod
     def requirements(spec, v: VCtx, dates) -> dict:
-        return obs.requirements(v, Trigger.source(spec), dates)
+        return obs.requirements(v, obs.source(spec), dates)
 
     @staticmethod
     def values(spec, p: PCtx, dates) -> np.ndarray:
-        return p.obs(Trigger.source(spec), dates)
+        return p.obs(obs.source(spec), dates)
 
     @classmethod
     def past_hits(cls, spec, v: VCtx, dates) -> list:
         """Past observation dates on which the barrier was breached; [] while history is incomplete (the
         missing dates are reported by the central history check)."""
         past = [d for d in dates if d < v.valuation_date]
-        if not past or obs.missing_history(v, cls.source(spec), past):
+        if not past or obs.missing_history(v, obs.source(spec), past):
             return []
         hits = _breach(cls.values(spec, PCtx(v, None, 1), past)[:, 0], spec.direction, cls.level(spec, v))
         return [d for d, h in zip(past, hits) if h]
@@ -397,7 +394,7 @@ class OptionPayoff(LegFactory):
     @classmethod
     def fixing_dates(cls, spec, v: VCtx, path):
         exp, _ = cls.dates(spec, v)
-        own = obs.requirements(v, spec.underlying or spec.observable, [exp])
+        own = obs.requirements(v, obs.source(spec), [exp])
         return merge_requirements(own, conditions_requirements(spec, v, path, exp))
 
     @classmethod
@@ -415,7 +412,7 @@ class OptionPayoff(LegFactory):
     @classmethod
     def cashflows(cls, spec, p: PCtx, path):
         exp, pay = cls.dates(spec, p.v)
-        x_t = p.obs(spec.underlying or spec.observable, [exp])[0]
+        x_t = p.obs(obs.source(spec), [exp])[0]
         units, k = cls.unit_scale(spec, p.v)
         phi = 1.0 if spec.option_type == "call" else -1.0
         amount = units * np.maximum(phi * (x_t - k), 0.0)
@@ -508,7 +505,7 @@ class KnockOutEvent(EventFactory):
                                  "if the rebate is the redemption, drop that date from the observation schedule")
 
     @staticmethod
-    def validate_past(spec, v: VCtx, path):
+    def validate_past(spec, v: VCtx, path, reads):
         """After the central history check: a hit before the valuation date means the trade is over."""
         if spec.observation == CONTINUOUS:
             return
@@ -615,6 +612,8 @@ class TargetEvent(EventFactory):
         valuation date reads a fixing of that date, which is simulated)."""
         if spec.accumulated is not None:
             return np.full(1, spec.accumulated)
+        if spec.id in p.v.target_paid:          # known from history alone: computed once, at validation
+            return p.v.target_paid[spec.id]
         total = np.zeros(1)
         for c, s, lpath, paid in TargetEvent.paid_legs(spec, p.v):
             lr = c.cashflows(s, p, lpath, pers=paid)
@@ -622,10 +621,16 @@ class TargetEvent(EventFactory):
         return total
 
     @staticmethod
-    def validate_past(spec, v: VCtx, path):
-        """After the central history check: a target already reached means the trade is over."""
-        if spec.accumulated is None and TargetEvent.fixing_dates(spec, v, path):
-            return          # a paid coupon reads a fixing of the valuation date: only known after simulation
+    def validate_past(spec, v: VCtx, path, reads):
+        """After the central history check (`reads`: this event's simulation needs from it): a target already
+        reached means the trade is over. A paid amount known from history alone is cached for pricing."""
+        if spec.accumulated is None:
+            if reads:
+                return      # a paid coupon reads a fixing of the valuation date: only known after simulation
+            if any(cspec.observation == CONTINUOUS for c, s, lpath, _ in TargetEvent.paid_legs(spec, v)
+                   for _, cspec, _ in parsed_conditions(s, v.report, lpath)):
+                return      # not priceable by simulation; the method selection reports it
+            v.target_paid[spec.id] = TargetEvent.paid_amount(spec, PCtx(v, None, 1))
         paid = float(TargetEvent.paid_amount(spec, PCtx(v, None, 1))[0])
         if paid >= spec.target * (1 - 1e-12):
             v.report.error(path, f"coupons paid by the valuation date ({paid:,.2f}) already reach the target "

@@ -164,7 +164,7 @@ class BermudanCall(EventFactory):
             reqs += [obs.requirements(v, u, ds) for u in v.underlyings] + ([{RATES: ds}] if v.stochastic_rates else [])
         o = spec.exercise_option
         if o is not None:
-            reqs.append(obs.requirements(v, o.underlying or o.observable, ds))
+            reqs.append(obs.requirements(v, obs.source(o), ds))
         return merge_requirements(*reqs)
 
     @classmethod
@@ -179,7 +179,7 @@ class BermudanCall(EventFactory):
         amount = np.broadcast_to(np.array([x for _, x in pairs])[:, None], (len(ds), n)).copy()
         o = spec.exercise_option
         if o is not None:
-            x = p.obs(o.underlying or o.observable, ds)
+            x = p.obs(obs.source(o), ds)
             if o.underlying is not None and (o.strike_mode or "relative") == "relative":
                 ref = v.reference_levels[o.underlying]
                 units, k = o.notional / ref, o.strike * ref
