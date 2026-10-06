@@ -133,8 +133,8 @@ Masks:
 - trade-level `bermudan_call`: issuer call / holder put / cancellation / Bermudan option on a schedule, priced
   by Longstaff-Schwartz (callable and puttable bonds, cancellable swaps, Bermudan options).
 
-Seasoned trades: priced after inception, between payment dates. Past rate, range and barrier fixings come from
-history and the rest is simulated (see "Seasoned trades" in components.md).
+Seasoned trades: priced after inception, between payment dates. Every payoff reads dates before the valuation
+date from history and later dates from the simulation (see "Seasoned trades" in components.md).
 
 Closed forms: European vanilla (BSM, Heston) and single continuous barrier (BSM).
 
@@ -145,7 +145,6 @@ Not yet supported, so say so rather than approximating:
 - FX / quanto / multi-currency,
 - snowball / memory coupons,
 - digital coupons other than range accrual,
-- a seasoned option leg whose expiry has passed but is not yet paid (give the known amount as `fixed_amount`),
 - past monitoring of a `continuous` barrier (closed forms only look forward from today),
 - custom payoff code (planned: a bridge for AI-written payoff components).
 
@@ -154,7 +153,10 @@ Not yet supported, so say so rather than approximating:
 Each component is a class registered with `@register(kind, type)` and a pydantic `Spec`
 (`pricer/registry.py`). A new observable, leg, condition, event, model or analytic pricer needs one class.
 Legs and observables read the market only through `models.Scenario` (equity paths, `discount`, `bond`,
-`growth`), so they work under every model. Validation,
+`growth`), so they work under every model. Legs, conditions and events go one step further: they read only
+through observables (`p.obs(name, dates)`, an underlying by its name) and declare their dates only through
+`obs.requirements`. That is what makes past fixings work for any payoff: history for past dates, simulation for
+later ones, one validation of the missing dates. A test enforces it. Validation,
 the catalog and the graph pick it up automatically. Add a regression test in `tests/` against a
 closed form or a limiting case. Run the suite with `$PY -m pytest <skill_dir>/tests -q`.
 

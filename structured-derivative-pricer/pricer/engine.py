@@ -100,6 +100,8 @@ class Plan:
         if self.method == "mc":
             out["simulation"] = {
                 "fixing_dates": {u: len(d) for u, d in self.sim_dates.items()},
+                "past_fixings_from_history": {n: len(set().union(*r.values()))
+                                              for n, r in sorted(self.v.past_reads.items())} if self.v else {},
                 "payment_dates": len(self.pay_dates),
                 "estimated_memory_mb": round(self.memory_mb, 1),
             }
@@ -355,12 +357,29 @@ def build_plan(raw: dict, base_dir: Path | str = ".") -> Plan:
                   f"first one at {exercise[0]}")
     if not rep.ok:
         return plan
+
+    # 7b. what every component reads, declared through obs.requirements. Dates before the valuation date are
+    #     served from history for any payoff, so they are checked here, once, for the whole trade.
+    fixing_reqs = []
+    for cls, spec, path in legs + events:
+        with obs.reading(v, path):
+            fixing_reqs.append(cls.fixing_dates(spec, v, path))
+    obs.check_history(v)
+    if rep.ok:
+        for cls, spec, path in events:
+            if hasattr(cls, "validate_past"):
+                cls.validate_past(spec, v, path)
+    if not rep.ok:
+        return plan
     trade = ParsedTrade(legs, conds, events, minfo)
     plan.trade = trade
 
     # 8. method selection
     settings = inp.pricing
     plan.analytic_matches = [(n, *c.match(trade)) for n, c in registry.types("analytic").items()]
+    if v.past_reads:        # closed forms start from today's spot and cannot use known fixings
+        plan.analytic_matches = [(n, False, "the trade reads fixings before the valuation date") if ok else (n, ok, r)
+                                 for n, ok, r in plan.analytic_matches]
     matching = [(n, r) for n, ok, r in plan.analytic_matches if ok]
     uses_continuous = any(s.observation == CONTINUOUS for c in conds.values() for _, s, _ in c) or \
         any(getattr(s, "observation", None) == CONTINUOUS for _, s, _ in events)
@@ -388,11 +407,9 @@ def build_plan(raw: dict, base_dir: Path | str = ".") -> Plan:
     # 9. simulation needs
     if plan.method == "mc":
         pays = set()
-        reqs = []
         for cls, spec, path in legs + events:
-            reqs.append(cls.fixing_dates(spec, v, path))
             pays.update(cls.payment_dates(spec, v))
-        plan.sim_dates = merge_requirements(*reqs)
+        plan.sim_dates = merge_requirements(*fixing_reqs)
         plan.pay_dates = sorted(pays)
         eq = [ds for k, ds in plan.sim_dates.items() if k != RATES]
         n_eq = _grid_size(set().union(*eq) | {val}, settings.steps_per_year) if eq else 0

@@ -161,10 +161,10 @@ class BermudanCall(EventFactory):
         ds = [d for d, _ in cls.dates(spec, v)]
         reqs = [obs.requirements(v, r, ds) for r in spec.regressors]
         if not spec.regressors:
-            reqs += [{u: ds} for u in v.underlyings] + ([{RATES: ds}] if v.stochastic_rates else [])
+            reqs += [obs.requirements(v, u, ds) for u in v.underlyings] + ([{RATES: ds}] if v.stochastic_rates else [])
         o = spec.exercise_option
         if o is not None:
-            reqs.append({o.underlying: ds} if o.underlying else obs.requirements(v, o.observable, ds))
+            reqs.append(obs.requirements(v, o.underlying or o.observable, ds))
         return merge_requirements(*reqs)
 
     @classmethod
@@ -179,7 +179,7 @@ class BermudanCall(EventFactory):
         amount = np.broadcast_to(np.array([x for _, x in pairs])[:, None], (len(ds), n)).copy()
         o = spec.exercise_option
         if o is not None:
-            x = p.fixings[o.underlying].loc[ds].values if o.underlying else p.obs(o.observable, ds)
+            x = p.obs(o.underlying or o.observable, ds)
             if o.underlying is not None and (o.strike_mode or "relative") == "relative":
                 ref = v.reference_levels[o.underlying]
                 units, k = o.notional / ref, o.strike * ref
@@ -189,7 +189,7 @@ class BermudanCall(EventFactory):
             amount += units * np.maximum(phi * (x - k), 0.0)
         cols = [p.obs(r, ds) for r in spec.regressors]
         if not spec.regressors:
-            cols += [p.fixings[u].loc[ds].values for u in v.underlyings]
+            cols += [p.obs(u, ds) for u in v.underlyings]
             if p.scenario.rates is not None:
                 cols.append(p.scenario.rates.state(ds))
         state = np.stack([np.broadcast_to(c, (len(ds), n)) for c in cols], axis=-1)

@@ -18,6 +18,7 @@ trade.history), so a seasoned trade mixes known fixings with simulated ones.
 """
 from __future__ import annotations
 
+import contextlib
 import datetime as dt
 from typing import Literal
 
@@ -69,18 +70,33 @@ def require_stochastic(v, name, path, what) -> bool:
 
 
 def requirements(v, name, dates) -> dict:
-    """Simulation state needed to evaluate `name` on the future dates among `dates`."""
+    """Simulation state needed to evaluate `name` on the future dates among `dates`.
+
+    This is the one place a component declares what it reads. Dates before the valuation date are not
+    simulated: they are recorded in v.past_reads (leaf observable -> reader path -> dates) and served
+    from history by `evaluate`, whatever the component. `check_history` then validates them all at once."""
     cls, spec = lookup(v, name)
-    future = sorted({d for d in dates if d >= v.valuation_date})
-    if not future:
-        return {}
     if not cls.is_leaf:
         out = {}
         for n in cls.deps(spec):
-            for k, ds in requirements(v, n, future).items():
+            for k, ds in requirements(v, n, dates).items():
                 out.setdefault(k, set()).update(ds)
         return {k: sorted(ds) for k, ds in out.items()}
-    return cls.requirements(spec, v, future)
+    past = {d for d in dates if d < v.valuation_date}
+    if past:
+        v.past_reads.setdefault(name, {}).setdefault(v.reader, set()).update(past)
+    future = sorted({d for d in dates if d >= v.valuation_date})
+    return cls.requirements(spec, v, future) if future else {}
+
+
+@contextlib.contextmanager
+def reading(v, path):
+    """Attribute the reads declared inside the block to `path` (for error messages)."""
+    before, v.reader = v.reader, path
+    try:
+        yield
+    finally:
+        v.reader = before
 
 
 def past_value(v, cls, spec, d):
@@ -91,26 +107,31 @@ def past_value(v, cls, spec, d):
     return getattr(spec, "history", {}).get(d)
 
 
-def check_fixings(v, name, dates, path) -> bool:
-    """Past fixing dates must be covered by `history` of every leaf the observable depends on."""
+def missing_history(v, name, dates) -> list:
+    """Past dates among `dates` on which `name` (or a leaf it depends on) has no known fixing."""
     cls, spec = lookup(v, name)
-    past = sorted({d for d in dates if d < v.valuation_date})
-    if not past:
-        return True
     if not cls.is_leaf:
-        return all([check_fixings(v, n, past, path) for n in cls.deps(spec)])
-    missing = [d for d in past if past_value(v, cls, spec, d) is None]
-    if missing:
+        return sorted({d for n in cls.deps(spec) for d in missing_history(v, n, dates)})
+    return sorted(d for d in dates if d < v.valuation_date and past_value(v, cls, spec, d) is None)
+
+
+def check_history(v):
+    """Report, per reader, every past fixing date recorded by `requirements` that history does not cover."""
+    for name, readers in v.past_reads.items():
+        cls, spec = lookup(v, name)
         if cls is EquityObs:
-            where = f"trade.history.{spec.underlying}" + (f" or observables.{name}.history" if name in v.observables
-                                                          else "")
+            where = f"trade.history.{spec.underlying}" + (f" (or observables.{name}.history)"
+                                                          if name in v.observables else "")
+            what = "closing level"
         else:
-            where = f"observables.{name}.history" if name in v.observables else f"a declared observable's `history`"
-        v.report.error(path, f"observable '{name}' needs {len(missing)} past fixing(s) before the valuation date "
-                             f"(first {missing[0]}, last {missing[-1]})",
-                       f"give them in {where} as {{YYYY-MM-DD: value}}")
-        return False
-    return True
+            where = f"observables.{name}.history" if name in v.observables else "a declared observable's `history`"
+            what = "fixing"
+        for path, dates in readers.items():
+            missing = missing_history(v, name, dates)
+            if missing:
+                v.report.error(path, f"'{name}' needs {len(missing)} past {what}(s) before the valuation date "
+                                     f"(first {missing[0]}, last {missing[-1]})",
+                               f"give them in {where} as {{YYYY-MM-DD: value}}")
 
 
 def evaluate(p, name, dates) -> np.ndarray:

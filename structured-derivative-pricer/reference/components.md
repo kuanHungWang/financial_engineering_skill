@@ -199,25 +199,30 @@ Use it for an optional early termination. The exercise is a choice someone makes
 
 ### Seasoned trades (priced after inception)
 
-Set `effective_date` to the trade date and keep the original schedules. Everything that already happened is read
-from history; everything after the valuation date is simulated. A fixing **on** the valuation date is simulated
-from today's spot / curve.
+Set `effective_date` to the trade date and keep the original schedules. Nothing else is specific to a
+seasoned trade, because past fixings are handled in one place for every payoff:
+
+- **One read path.** Every component reads the market on a date through its observables (a model underlying is
+  the observable of its own name). A date before the valuation date returns the known fixing from history; a
+  later one returns the simulated value. A fixing **on** the valuation date is simulated from today's spot /
+  curve. Composites (`linear`, `min_of`, worst-of performances) combine their leaves' history the same way.
+- **One check.** Every component declares the dates it reads. Validation collects the past ones for the whole
+  trade and lists, per input path, each date without a fixing. `plan` shows `past_fixings_from_history`.
+- So any coupon, range, barrier, index formula or option payoff mixes known and simulated fixings without its
+  own code. That includes a range accrual or a compounded rate in the middle of a period, a barrier already
+  touched, and an option whose expiry has passed but which is not yet paid.
+- Closed forms start from today's spot, so a trade that reads a past fixing is priced by Monte Carlo.
+
+What is not a fixing, and so stays specific:
 
 | feature | before the valuation date |
 |---|---|
-| coupon periods | paid on or before the valuation date: dropped. The current period keeps its full accrual |
-| in-advance / in-arrears rate | the fixing comes from the index `history` |
-| compounded in arrears | the known daily rates of the current period compound from `history`, the rest is simulated |
-| range accrual | known observation days count from history, the rest are simulated; the fraction uses the whole period |
-| `knock_in` / `knock_out` condition | past observation dates are read from history: a past touch is already in the mask |
-| `knock_out` event (autocall, KO) | past dates need history; a past hit is an error (the trade has terminated) |
-| `target` (TARN) | coupons already paid go in `accumulated` (cash); validation requires it when such payments exist |
-| `bermudan_call` | only exercise dates after the valuation date |
+| cashflows | paid on or before the valuation date: dropped. The current coupon period keeps its full accrual |
+| `knock_out` event (autocall, KO) | a hit on a past date (read from history) is an error: the trade has terminated |
+| `target` (TARN) | coupons already paid are not recomputed: give their sum in `accumulated` (required when they exist) |
+| `bermudan_call` | only exercise dates after the valuation date (a past date was a decision, not a fixing) |
 | relative strikes / barriers / performance | `reference_levels`, else the close on `effective_date` from `trade.history` |
 | `observation: continuous` | only monitors forward from today (warning): confirm with the user the barrier was not hit |
-
-Not covered: an option leg whose expiry has passed but which is still unpaid. Give its known amount as a
-`fixed_amount` leg.
 
 ## Conventions (read these before writing a spec)
 

@@ -287,17 +287,12 @@ class FloatingRate:
                 v.report.error(path + ".index", f"compounded_in_arrears needs an overnight_rate observable; "
                                                 f"'{spec.index}' is {icls.type_name}")
                 return
-            past = set()
             for q in pers:
-                ispec, days, _, k, j, _, _ = cls._split(spec, v, q)
+                _, days, _, k, _, _, _ = cls._split(spec, v, q)
                 if k < 1:
                     v.report.error(path + ".lockout_days", f"lockout_days {spec.lockout_days} leaves no free day in "
                                                            f"the period {q.start}..{q.end} ({len(days)} days)")
                     return
-                past.update(days[:j])
-                if spec.lockout_days and days[k - 1] < v.valuation_date:
-                    past.add(days[k - 1])
-            obs.check_fixings(v, spec.index, past, path + ".index")
         else:
             if spec.lockout_days:
                 v.report.error(path + ".lockout_days", "lockout_days applies to fixing: compounded_in_arrears only")
@@ -305,7 +300,6 @@ class FloatingRate:
                 v.report.error(path + ".fixing_lag", f"index '{spec.index}' has no single rate-index fixing convention",
                                "set fixing_lag and fixing_calendar")
                 return
-            obs.check_fixings(v, spec.index, [cls.fixing_date(spec, v, q) for q in pers], path + ".index")
         pv = {name: _PeriodLeg.values(spec, v, pers, name, path, allow_none=name in ("cap", "floor"))
               for name in ("gearing", "spread", "cap", "floor")}
         if any(x is None for x in pv.values()):
@@ -324,7 +318,8 @@ class FloatingRate:
             return obs.requirements(v, spec.index, [cls.fixing_date(spec, v, q) for q in pers])
         reqs = []
         for q in pers:
-            _, days, _, k, _, free_end, model_start = cls._split(spec, v, q)
+            _, days, _, k, j, free_end, model_start = cls._split(spec, v, q)
+            reqs.append(obs.requirements(v, spec.index, days[:j]))        # the known daily rates
             if v.stochastic_rates and model_start < free_end:
                 reqs.append({RATES: [model_start, free_end]})
             if spec.lockout_days:
@@ -335,8 +330,9 @@ class FloatingRate:
     def _compounded(cls, spec, p: PCtx, per):
         ispec, days, deltas, k, j, free_end, model_start = cls._split(spec, p.v, per)
         g = np.ones(1)
-        for i in range(j):
-            g = g * (1 + ispec.history[days[i]] * deltas[i])
+        if j:
+            known = obs.evaluate(p, spec.index, days[:j])
+            g = np.prod(1 + known * np.array(deltas[:j])[:, None], axis=0)
         if model_start < free_end:
             g = g * p.scenario.growth(ispec.curve, model_start, free_end)
         if spec.lockout_days:
@@ -416,8 +412,9 @@ class FloatingLeg(_PeriodLeg):
     @classmethod
     def fixing_dates(cls, spec, v, path):
         pers = cls.periods(spec, v)
-        return merge_requirements(FloatingRate.requirements(spec, v, pers),
-                                  conditions_requirements(spec, v, path, pers[-1].end))
+        with obs.reading(v, path + ".index"):
+            own = FloatingRate.requirements(spec, v, pers)
+        return merge_requirements(own, conditions_requirements(spec, v, path, pers[-1].end))
 
     @classmethod
     def cashflows(cls, spec, p: PCtx, path):
@@ -523,7 +520,6 @@ class RangeAccrual(_PeriodLeg):
             if crossed:
                 v.report.error(f"{path}.range[{i}]", f"lower > upper in {len(crossed)} period(s), first "
                                                      f"{crossed[0].start}..{crossed[0].end}")
-        dates = set()
         for q in pers:
             o = cls.observations(spec, q)
             if o is None:
@@ -533,19 +529,22 @@ class RangeAccrual(_PeriodLeg):
                 v.report.error(path + ".range_cutoff_days", f"{spec.range_cutoff_days} cut-off days leave no free "
                                                             f"observation in the period {q.start}..{q.end}")
                 return
-            dates.update(o[0])
         for i, r in enumerate(spec.range):
             rp = f"{path}.range[{i}].observable"
-            if obs.known(v, r.observable, rp) and obs.require_stochastic(v, r.observable, rp, "a range condition"):
-                obs.check_fixings(v, r.observable, dates, rp)
+            if obs.known(v, r.observable, rp):
+                obs.require_stochastic(v, r.observable, rp, "a range condition")
 
     @classmethod
     def fixing_dates(cls, spec, v, path):
         pers = cls.periods(spec, v)
         dates = sorted({d for q in pers for d in cls.observations(spec, q)[0]})
-        reqs = [obs.requirements(v, r.observable, dates) for r in spec.range]
+        reqs = []
+        for i, r in enumerate(spec.range):
+            with obs.reading(v, f"{path}.range[{i}].observable"):
+                reqs.append(obs.requirements(v, r.observable, dates))
         if spec.index is not None:
-            reqs.append(FloatingRate.requirements(spec, v, pers))
+            with obs.reading(v, path + ".index"):
+                reqs.append(FloatingRate.requirements(spec, v, pers))
         return merge_requirements(*reqs, conditions_requirements(spec, v, path, pers[-1].end))
 
     @classmethod

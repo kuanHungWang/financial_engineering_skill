@@ -98,7 +98,7 @@ def test_range_accrual_mid_period_counts_known_days_from_history():
 
 def test_range_accrual_needs_underlying_history():
     e = errors(doc([_ra()], schedules=RA_SCHED, maturity="2027-01-29"))
-    assert "past fixing" in e["trade.legs[0].range[0].observable"]
+    assert "past closing level" in e["trade.legs[0].range[0].observable"]
     d = doc([_ra()], history={"AAA": {past_days()[0]: 100.0}}, schedules=RA_SCHED, maturity="2027-01-29")
     assert "trade.history.AAA" in str(build_plan(copy.deepcopy(d), EX).report.errors)
 
@@ -236,3 +236,37 @@ def test_compounded_in_arrears_mid_period_matches_quantlib_with_fixings():
     target = ql.OvernightIndexedCoupon(e, N, s, e, idx).amount()
     idx.clearFixings()
     assert r["expected_cashflows"][0]["expected_amount"] == pytest.approx(target, rel=1e-9)
+
+
+# ---------------------------------------------------------------- generic: any payoff reads past fixings the same way
+def test_expired_unpaid_option_is_its_known_intrinsic_value():
+    """Expiry passed, payment still due: the payoff reads its fixing from history like any other read."""
+    exp, pay = dt.date(2026, 9, 21), dt.date(2026, 10, 5)
+    put = _put(expiry=exp.isoformat(), payment_date=pay.isoformat())
+    r = price(doc([put], history=flat_history({exp: 90.0}), reference_levels={"AAA": 100.0},
+                  maturity=pay.isoformat()))
+    assert r["std_error"] == pytest.approx(0, abs=1e-9)
+    assert r["price"] == pytest.approx(N * 0.10 * df(pay), rel=1e-9)
+
+
+def test_composite_index_fixed_in_the_past_reads_history_of_its_leaves():
+    """An equity-linked coupon (linear on a performance observable) fixed in advance at the start of a
+    period that began before the valuation date: no component knows about history, the read does."""
+    observables = {"PERF": {"type": "equity", "underlying": "AAA", "mode": "performance"},
+                   "CPN": {"type": "linear", "constant": -1.0, "terms": [{"observable": "PERF", "weight": 1.0}]}}
+    leg = {"id": "eq", "type": "floating_leg", "index": "CPN", "notional": N, "schedule": "one",
+           "fixing": "in_advance", "fixing_lag": 0, "fixing_calendar": "NullCalendar", "day_count": "Actual360"}
+    end = dt.date(2026, 12, 29)
+    r = price(doc([leg], observables=observables, schedules={"one": {"type": "dates", "dates": [end.isoformat()]}},
+                  history=flat_history({START: 80.0}), maturity=end.isoformat(), reference_levels={"AAA": 40.0}))
+    assert r["price"] == pytest.approx(N * (80.0 / 40.0 - 1.0) * (end - START).days / 360 * df(end), rel=1e-9)
+    plan = build_plan(copy.deepcopy(doc([leg], observables=observables, maturity=end.isoformat(),
+                                        schedules={"one": {"type": "dates", "dates": [end.isoformat()]}})), EX)
+    assert "'PERF' needs 1 past closing level" in str(plan.report.errors)
+
+
+def test_components_read_the_market_only_through_observables():
+    """The contract that makes history generic: no payoff component reads simulated paths directly."""
+    for f in ("payoffs.py", "coupons.py", "bermudan.py", "exercise.py", "analytic.py"):
+        src = (ROOT / "pricer" / f).read_text()
+        assert "scenario.equity" not in src and ".history[" not in src, f
