@@ -27,6 +27,17 @@ def mock_surface(atm=0.18, skew=-0.12, curvature=0.15, term_slope=0.01):
     return rows
 
 
+SWAPTION_EXPIRIES = ["1M", "3M", "6M", "1Y", "2Y", "3Y", "5Y", "7Y", "10Y"]
+SWAPTION_TENORS = ["1Y", "2Y", "5Y", "10Y", "20Y"]
+
+
+def mock_swaption_normal_vols(base=0.0080, hump=0.0025, decay=2.0, tenor_slope=0.0006):
+    """USD-like ATM normal vols: a hump at short expiries decaying with expiry, lower for long swaps."""
+    years = {"1M": 1 / 12, "3M": 0.25, "6M": 0.5, "1Y": 1, "2Y": 2, "3Y": 3, "5Y": 5, "7Y": 7, "10Y": 10, "20Y": 20}
+    return [[round(base + hump * math.exp(-years[e] / decay) - tenor_slope * math.log1p(years[t]), 5)
+             for t in SWAPTION_TENORS] for e in SWAPTION_EXPIRIES]
+
+
 def build(as_of: dt.date, ticker: str, spot: float) -> dict:
     return {
         "_note": "MOCK / SYNTHETIC market data for development and testing. Not real market data.",
@@ -55,6 +66,10 @@ def build(as_of: dt.date, ticker: str, spot: float) -> dict:
                 "dividend": {"type": "flat", "rate": 0.01},
                 "vol": {"type": "constant", "value": 0.20},
             },
+        },
+        "swaption_vols": {
+            "USD": {"type": "matrix", "currency": "USD", "vol_type": "normal",
+                    "expiries": SWAPTION_EXPIRIES, "tenors": SWAPTION_TENORS, "vols": mock_swaption_normal_vols()},
         },
     }
 

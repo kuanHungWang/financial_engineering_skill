@@ -253,9 +253,15 @@ def correlation_factor(m) -> np.ndarray:
 
 
 class ModelFactory:
-    """underlyings(spec) -> [names]; curves(spec) -> [names];
-    validate(spec, market, report, path); build(spec, ...) -> BuiltModel"""
+    """underlyings(spec) -> [names]; curves(spec) -> [names]; swaption_vols(spec) -> [names];
+    validate(spec, market, report, path); build(spec, ...) -> BuiltModel
+
+    A model that names swaption vols receives them built, as build(..., swaption_vols={name: SwaptionVolData})."""
     stochastic_rates = False
+
+    @staticmethod
+    def swaption_vols(spec):
+        return []
 
 
 @register("model", "black_scholes")

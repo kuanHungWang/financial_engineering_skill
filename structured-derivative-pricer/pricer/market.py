@@ -1,8 +1,10 @@
-"""Market data components: yield curves and Black volatility term structures, built from
-QuantLib rate helpers, piecewise curves and Black variance term structures.
+"""Market data components: yield curves, Black volatility term structures and swaption vol matrices,
+built from QuantLib rate helpers, piecewise curves, Black variance term structures and
+SwaptionVolatilityMatrix.
 """
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import Literal
 
 import QuantLib as ql
@@ -226,3 +228,73 @@ class SurfaceVol(VolFactory):
     @staticmethod
     def max_tenor(spec):
         return cv.period(spec.tenors[-1])
+
+
+# ---------------------------------------------------------------- swaption vols
+@dataclass
+class SwaptionVolData:
+    """An ATM swaption vol matrix plus the swap conventions its quotes refer to."""
+    surface: ql.SwaptionVolatilityStructureHandle
+    vol_type: int                      # ql.Normal or ql.ShiftedLognormal
+    shift: float
+    conventions: cv.CurveConventions
+    quoted: list                       # every quoted (expiry, tenor) as ql.Period pairs
+
+    def vol(self, expiry: ql.Period, tenor: ql.Period) -> float:
+        s = self.surface.currentLink()
+        return s.volatility(s.optionDateFromTenor(expiry), tenor, 0.0, True)
+
+
+class SwaptionVolFactory:
+    """build(spec) -> SwaptionVolData (reference date = QuantLib evaluation date = valuation date)"""
+
+
+@register("swaption_vol", "matrix")
+class SwaptionVolMatrix(SwaptionVolFactory):
+    description = ("ATM swaption vol matrix: vols[i][j] is the vol for option expiries[i] into a swap of tenors[j]. "
+                   "The underlying swaps follow the currency's bootstrap conventions (annual 30/360 fixed vs the 6M "
+                   "index). Interpolated bilinearly (QuantLib SwaptionVolatilityMatrix), flat extrapolation.")
+
+    class Spec(SpecModel):
+        currency: Literal["USD", "EUR", "JPY", "GBP", "TWD"] = "USD"
+        vol_type: Literal["normal", "lognormal"] = Field(
+            "normal", description="normal (Bachelier, absolute: 0.008 = 80bp) or (shifted) lognormal Black vols")
+        shift: float = Field(0.0, ge=0, description="lognormal shift (e.g. 0.01); must be 0 for normal vols")
+        expiries: list[str] = Field(min_length=1)
+        tenors: list[str] = Field(min_length=1)
+        vols: list[list[float]]
+
+        @model_validator(mode="after")
+        def _shape(self):
+            if len(self.vols) != len(self.expiries):
+                raise ValueError(f"vols needs {len(self.expiries)} rows (one per expiry), got {len(self.vols)}")
+            for i, row in enumerate(self.vols):
+                if len(row) != len(self.tenors):
+                    raise ValueError(f"vols[{i}] needs {len(self.tenors)} values (one per tenor), got {len(row)}")
+                if any(not 0 < x < 5 for x in row):
+                    raise ValueError(f"vols[{i}] must be positive decimals (normal 0.008 = 80bp, lognormal 0.2 = 20%)")
+            for name in ("expiries", "tenors"):
+                ps = [cv.period(t) for t in getattr(self, name)]
+                if any(ps[k] >= ps[k + 1] for k in range(len(ps) - 1)):
+                    raise ValueError(f"{name} must be increasing")
+            if self.vol_type == "normal" and self.shift:
+                raise ValueError("shift applies to lognormal vols only")
+            return self
+
+    @staticmethod
+    def build(spec):
+        conv = cv.curve_conventions(spec.currency)
+        vol_type = ql.Normal if spec.vol_type == "normal" else ql.ShiftedLognormal
+        n, m = len(spec.expiries), len(spec.tenors)
+        vols, shifts = ql.Matrix(n, m), ql.Matrix(n, m)
+        for i in range(n):
+            for j in range(m):
+                vols[i][j] = spec.vols[i][j]
+                shifts[i][j] = spec.shift
+        surf = ql.SwaptionVolatilityMatrix(conv.calendar, conv.roll, [cv.period(t) for t in spec.expiries],
+                                           [cv.period(t) for t in spec.tenors], vols, ql.Actual365Fixed(),
+                                           True, vol_type, shifts)
+        surf.enableExtrapolation()
+        quoted = [(cv.period(e), cv.period(t)) for e in spec.expiries for t in spec.tenors]
+        return SwaptionVolData(ql.SwaptionVolatilityStructureHandle(surf), vol_type, spec.shift, conv, quoted)
+

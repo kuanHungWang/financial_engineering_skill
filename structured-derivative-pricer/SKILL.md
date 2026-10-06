@@ -45,7 +45,7 @@ After that, run every command below as `$PY <skill_dir>/scripts/price.py ...`.
    covers the mapping table, the sign conventions, and worked product recipes. For exact field
    names, defaults and allowed values, run `price.py catalog [kind]`. The catalog is generated
    from the code and is always current.
-3. **Market data.** Ask the user for curves, spot, dividends and vols, or look for files in the working
+3. **Market data.** Ask the user for curves, spot, dividends and vols (swaption vols to calibrate Hull-White), or look for files in the working
    directory. The format is in [reference/market_data.md](reference/market_data.md). Convert what they
    give (CSV, pasted tables) into that YAML. **Never invent market data silently.** For a demo or test,
    `scripts/make_mock_market.py OUT.yaml --as-of YYYY-MM-DD` writes clearly-labelled mock data. Say
@@ -97,7 +97,8 @@ After that, run every command below as `$PY <skill_dir>/scripts/price.py ...`.
 | `warnings`, `notes` | report every warning to the user, e.g. vol extrapolation or local-vol flooring |
 
 Report the price with its CI, the method, the key probabilities, any warnings, and the model
-assumptions (model type, and whether the data is mock). For model risk on path-dependent
+assumptions (model type, and whether the data is mock). For a calibrated `hull_white`, report the fitted
+`mean_reversion` / `volatility` and the worst swaption miss from `model_diagnostics.calibration`. For model risk on path-dependent
 products, it can help to price under both `black_scholes` (local vol from the surface) and
 `heston`, and show the gap.
 
@@ -106,7 +107,8 @@ products, it can help to price under both `black_scholes` (local vol from the su
 Models:
 - `black_scholes`: one or several correlated equity underlyings (constant / term / Dupire local vol).
 - `heston`: single asset, given or calibrated parameters.
-- `hull_white`: 1F rates, given `mean_reversion` and `volatility`.
+- `hull_white`: 1F rates, given `mean_reversion` and `volatility`, or calibrated to ATM swaptions
+  (`calibration`: coterminal, whole matrix, or listed expiry x tenor points).
 
 Observables:
 - equity level or performance,
@@ -133,7 +135,6 @@ Closed forms: European vanilla (BSM, Heston) and single continuous barrier (BSM)
 Not yet supported, so say so rather than approximating:
 - more than one Bermudan exercise right per trade (e.g. both issuer call and holder put),
 - American (continuous) exercise; approximate it by a daily `bermudan_call` schedule only if the user agrees,
-- Hull-White calibration to swaptions,
 - equity plus stochastic-rate hybrids,
 - FX / quanto / multi-currency,
 - snowball / memory coupons,

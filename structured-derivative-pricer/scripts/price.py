@@ -32,7 +32,7 @@ def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = ap.add_subparsers(dest="cmd", required=True)
     c = sub.add_parser("catalog")
-    c.add_argument("kind", nargs="?", choices=["curve", "vol", "schedule", "model", "observable", "leg",
+    c.add_argument("kind", nargs="?", choices=["curve", "vol", "swaption_vol", "schedule", "model", "observable", "leg",
                                                "condition", "event", "analytic"])
     for name in ("validate", "plan", "price"):
         p = sub.add_parser(name)
