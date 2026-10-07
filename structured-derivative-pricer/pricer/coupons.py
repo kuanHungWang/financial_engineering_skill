@@ -226,7 +226,7 @@ class _PeriodLeg(LegFactory):
 
 
 # ------------------------------------------------------------------ floating rate
-class _RateFields(SpecModel):
+class _FixingFields(SpecModel):
     fixing: Literal["in_advance", "in_arrears", "compounded_in_arrears"] = "in_advance"
     fixing_lag: int | None = Field(None, ge=0, description="business days before accrual start (in_advance) or end "
                                                            "(in_arrears); default: the index's fixing days. Unused "
@@ -234,6 +234,9 @@ class _RateFields(SpecModel):
     fixing_calendar: str | None = Field(None, description="default: the index's fixing calendar")
     lockout_days: int = Field(0, ge=0, description="compounded_in_arrears only: the last n daily rates of a period "
                                                    "equal the rate of the business day before them")
+
+
+class _RateFields(_FixingFields):
     gearing: PeriodValue = Field(1.0, description="multiplier on the index" + _PV)
     spread: PeriodValue = Field(0.0, description="added after gearing" + _PV)
     cap: PeriodValue | None = Field(None, description="cap on the period rate (after gearing and spread)" + _PV)

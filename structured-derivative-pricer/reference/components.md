@@ -63,7 +63,8 @@ observables ──▶ legs (cashflow per payment date and path) ──▶ masks 
    linear (spread, basket, K - m·L) / min_of / max_of           trade events:  knock_out (termination), target (TARN)
 ```
 
-Every product is a combination of these blocks. You never write a payoff formula.
+Every product is a combination of these blocks. You never write pricing code. The only formulas are a
+`path_dependent` leg's per-period state update and coupon, which are checked, not executed.
 
 ### Observables
 
@@ -105,8 +106,9 @@ Every product is a combination of these blocks. You never write a payoff formula
 | `range_accrual` | notional · rate · τ · (weighted days on which **every** `range` condition holds / weighted days) |
 | `option_payoff` | notional · max(φ·(X_T − K), 0) on an underlying (relative/absolute strike) or an observable (absolute) |
 | `fixed_amount` | a known amount on one date |
+| `path_dependent` | notional · payoff(x_k, S_k) per period, with a state S_k = evolve(S_{k−1}, x_k) carried between periods (see below) |
 
-**Periods** (fixed, floating, range accrual) follow these rules:
+**Periods** (fixed, floating, range accrual, path dependent) follow these rules:
 - The schedule lists accrual **end** dates. The first period starts at `accrual_start` (default effective_date).
 - Payment = end + `payment_lag` business days.
 - Periods paid on or before the valuation date are dropped.
@@ -149,6 +151,85 @@ cap: {effective_date: null, 2Y: 0.06}        # null = no cap / floor / bound in 
 - `range_cutoff_days: n` freezes the last n observations at the one before them.
 - Each `range` entry is `{observable, lower, upper, lower_inclusive, upper_inclusive}`, with one or both bounds.
 - Several entries mean all must hold. That covers "all underlyings in range".
+
+### Path-dependent coupons (`path_dependent`)
+
+Use it when a coupon depends on earlier periods, not only on its own fixings: snowball, snowrange, memory / phoenix
+coupons, ratchet (sticky) floaters, cliquets, lookbacks, a cap on the cumulative coupon. Each period k of
+`schedule` runs one step on every path:
+
+```
+x_k  = inputs fixed for period k
+d    = define(x_k, S_{k-1})                  optional named intermediate values, in order
+S_k  = evolve(S_{k-1}, x_k, d)               every state at once: right-hand sides read the previous values
+c_k  = payoff(x_k, S_k, d)                   prev(S) = S_{k-1}
+cashflow_k = position · notional_k · c_k     paid on the period's payment date
+```
+
+```yaml
+- id: coupons
+  type: path_dependent
+  notional: 1000000
+  schedule: quarterly
+  day_count: Actual360                       # gives `tau`
+  inputs:                                    # what is fixed each period
+    L: {observable: L3M, fixing: in_advance, fixing_lag: 2, fixing_calendar: UnitedStates.GovernmentBond}
+  parameters:                                # per-period values: number, list, or {date: value} steps
+    K: {effective_date: 0.045, 2Y: 0.05}
+  state:
+    C: {initial: 0.0, evolve: "max(C + K - L, 0)"}
+  payoff: "C * tau"                          # a fraction of notional
+```
+
+**Inputs.** Each is one of:
+- `{observable, fixing, ...}`: one fixing per period. `fixing` is **required**: `in_advance` (fixing_lag business
+  days before the accrual start), `in_arrears` (before the accrual end; an equity observation date is the period
+  end, lag 0), or `compounded_in_arrears` (an `overnight_rate`, optional `lockout_days`, as in floating_leg).
+  `fixing_lag` / `fixing_calendar` default to the index's; an observable without one (an equity) uses the period
+  date itself.
+- `{range: [...], observation_calendar, day_basis, range_cutoff_days}`: the period's range-accrual fraction in
+  [0, 1], exactly as `range_accrual` computes it (for a snowrange).
+
+**Formulas** (`define`, `evolve`, `payoff`) are piecewise polynomials with digital switches, closed under
+composition. They are parsed and checked, never executed as code:
+
+| construct | use |
+|---|---|
+| `+ - * / **`, numbers | linear and polynomial terms, ratios (`S_end / S_start - 1`) |
+| `min(a, b, ...)`, `max(...)`, `clip(x, lo, hi)`, `abs(x)` | floors, caps, ratchets, lookbacks |
+| `<  <=  >  >=  ==  !=` (chains allowed: `L <= x < U`) | indicators: 1 where true, 0 where false |
+| `and`, `or`, `not`, `where(c, a, b)`, `a if c else b` | digital switches |
+| `exp`, `log`, `sqrt` | |
+| `prev(S)` | payoff only: the state before this period's update |
+
+Names a formula may read: inputs, parameters, states, defines (a define only those before it), and the built-ins
+`tau` (accrual fraction), `period` (0-based index in the schedule), `n_periods`, `is_first`, `is_last` (1 or 0).
+Validation lists unknown names; a non-finite value at run time (division by zero, log of a negative) is an error
+that names the formula and the period. As with every other component, `min`/`max`/`clip`/`abs` or an indicator
+that depends **only** on deterministic inputs (a rate under `black_scholes`) is rejected.
+
+| product | formulas |
+|---|---|
+| snowball: C = max(C_prev + K − L, 0) | state `C: max(C + K - L, 0)`; payoff `C * tau` |
+| capped snowball, gearing g | state `C: clip(C + K - g * L, 0, cap)`; payoff `C * tau` |
+| snowrange: C = (C_prev + s) · days in range / days | range input `F`; state `C: (C + s) * F`; payoff `C * tau` |
+| memory coupon c, barrier B on worst-of W (in_arrears) | define `hit: W >= B`; state `U: where(hit, 0, U + c)`; payoff `hit * (prev(U) + c)` |
+| ratchet floater: L + s, within [C_prev, C_prev + u] | state `C: where(is_first, L + s, clip(L + s, C, C + u))`; payoff `C * tau` |
+| cumulative coupon capped at T | state `A: min(A + raw, T)`; payoff `A - prev(A)` |
+| accumulated cliquet paid at maturity | inputs `S0` (in_advance), `S1` (in_arrears); state `A: A + clip(S1 / S0 - 1, f, c)`; payoff `is_last * max(A, 0)` |
+| lookback: best observed performance | state `M: max(M, X)`; payoff `is_last * max(M - 1, 0)` |
+
+- The state starts at `initial` before the **first period of the schedule** and runs through every period, paid ones
+  included, so a seasoned trade reads its past fixings from history like any other component. If those fixings are
+  not available, `known_state: {period_end: <a paid accrual end>, values: {C: 0.031}}` gives the state after that
+  period and evolution starts there.
+- Leg `conditions` (knock-in / knock-out) gate cashflows only; the state keeps evolving.
+- Trade events work as on any leg: an autocall (`knock_out`) on a memory coupon gives a phoenix; a `target` event can
+  accumulate it.
+- **Callable snowball.** The issuer's call decision depends on the current coupon, so name the state as a
+  `bermudan_call` regressor: `regressors: [L3M, coupons.C]` (`<leg id>.<state>`). On an exercise date the regressor
+  is the state after the last period whose inputs were all fixed on or before that date (no look-ahead).
+- `price.py inspect` writes each state's paths to `leg_<id>.states.<S>.csv`, columns dated when the state is known.
 
 ### Masks
 
@@ -284,6 +365,12 @@ What is not a fixing, and so stays specific:
 | "accrues daily while index in [L, U]" | leg `range_accrual` with one `range` entry |
 | "accrues only when A and B are both in range" | `range_accrual` with two `range` entries |
 | "accrues while spread / basket in range" | `range_accrual` on a `linear` observable |
+| "snowball: coupon = previous coupon + K − 3M rate, floored at 0" | `path_dependent`, state `C: max(C + K - L, 0)`, payoff `C * tau` (needs `hull_white`) |
+| "snowrange: (previous coupon + s) × days in range / days" | `path_dependent` with a `range` input |
+| "memory coupon: pays all missed coupons on the next observation above B" | `path_dependent` memory recipe; add a `knock_out` event for a phoenix autocall |
+| "coupon may not fall / rise by more than u from the previous one" (ratchet, sticky) | `path_dependent` ratchet recipe |
+| "total coupons capped at T" (without early redemption) | `path_dependent` cumulative-cap recipe; with redemption it is a `target` event |
+| "callable snowball" | `path_dependent` + `bermudan_call` with `regressors: [<rate>, <leg id>.C]` |
 | "knock-in if closing price ≤ B% on the final valuation date" | condition `knock_in`, `down`, schedule `[maturity]` |
 | "coupons start after the index first closes ≥ B" (kick-in) | condition `knock_in` on the coupon leg |
 | "coupons stop once the index closes ≤ B" | condition `knock_out` on the coupon leg |
@@ -316,6 +403,8 @@ What is not a fixing, and so stays specific:
 | `callable_fixed_rate_bond_calibrated.yaml` | same 10NC2 bond | Hull-White volatility calibrated to coterminal swaptions |
 | `cancellable_swap.yaml` | 5Y receive-fixed swap, cancellable annually by the counterparty | `fixed_leg` + short `floating_leg` + `bermudan_call` (issuer, price 0, swap-rate regressor), Hull-White |
 | `bermudan_put.yaml` | 1Y Bermudan put on SPX, monthly exercise | `option_payoff` + `bermudan_call` (holder, `exercise_option`) |
+| `callable_snowball.yaml` | 5NC1 callable snowball, max(C + K − 3M, 0), K stepping up | `path_dependent` + principal + `bermudan_call` (issuer) regressing on the coupon state, Hull-White |
+| `phoenix_memory_autocall.yaml` | 2Y worst-of phoenix with memory coupon | `path_dependent` memory coupon + principal + short KI worst-of put + `knock_out` autocall |
 | `seasoned_range_accrual_note.yaml` | 6M SPX range accrual traded 2 months ago, valued mid-period | shared fixings file (`fixings/mock_fixings.yaml`) for the range days and a daily knock-in put; prices at any date with `--set valuation_date=...` |
 
 ## Models

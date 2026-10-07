@@ -18,7 +18,8 @@ curve ─▶ discount ─▶ underlying ─▶ model ─▶ scenario ─▶ obse
 Products are assembled from building blocks: **observables** (equity, term/swap/overnight rates, linear
 combinations, worst-of), **legs** (fixed, floating, range accrual, option, fixed amount) and **masks**
 (kick-in / knock-out conditions on a leg, knock-out termination, target (TARN) and Bermudan exercise events
-on the trade).
+on the trade). A **path-dependent** leg carries a state between periods (snowball, memory coupon), with its
+update and payoff given as checked formulas.
 
 ## Setup (once per machine)
 
@@ -76,6 +77,10 @@ After that, run every command below as `$PY <skill_dir>/scripts/price.py ...`.
   It must not produce new values from new inputs: no re-discounting with another curve, no re-simulation from
   the paths, no changed payoff or exercise rule. Present its results as diagnostics, never as a price or a
   sensitivity; a price or a sensitivity comes from `price.py` runs. Say which files it used.
+- Use `path_dependent` only for a coupon that depends on earlier periods (a state). A coupon that a dedicated leg
+  covers (fixed, floating with cap / floor, range accrual) or a mask covers (kick-in, knock-out, autocall, TARN) uses
+  that component: it carries the right diagnostics, closed forms and validation. Write a formula exactly as the
+  term sheet defines the coupon; never tune it to approximate a feature it cannot express.
 - Do not approximate a feature you cannot express. For example, do not drop a coupon's knock-out
   condition because it is inconvenient. Say that it is unsupported.
 - Keep `pricing.seed` fixed across runs you compare. Prices are exactly reproducible per seed.
@@ -180,7 +185,11 @@ Legs:
 - `floating_leg` (in advance, in arrears, or compounded in arrears with lockout; gearing, spread, cap, floor),
 - `range_accrual` (fixed or floating coupon; any number of ranges on any observables),
 - `option_payoff` (on an underlying or an observable),
-- `fixed_amount`.
+- `fixed_amount`,
+- `path_dependent`: a state carried between periods, S_k = evolve(S_{k-1}, x_k), coupon = payoff(x_k, S_k), as
+  formulas (+ − × ÷ **, min, max, clip, 0/1 indicators, where): snowball, snowrange, memory / phoenix coupons,
+  ratchet floaters, cliquets, lookbacks, cumulative caps. Its state can be a `bermudan_call` regressor
+  (callable snowball).
 
 Masks:
 - `knock_in` (kick-in) and `knock_out` conditions on any leg,
@@ -198,8 +207,6 @@ Not yet supported, so say so rather than approximating:
 - American (continuous) exercise; approximate it by a daily `bermudan_call` schedule only if the user agrees,
 - equity plus stochastic-rate hybrids,
 - FX / quanto / multi-currency,
-- snowball / memory coupons,
-- digital coupons other than range accrual,
 - past monitoring of a `continuous` barrier (closed forms only look forward from today),
 - custom payoff code (planned: a bridge for AI-written payoff components).
 

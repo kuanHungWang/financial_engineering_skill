@@ -316,7 +316,7 @@ def test_composite_index_fixed_in_the_past_reads_history_of_its_leaves():
 
 def test_components_read_the_market_only_through_observables():
     """The contract that makes history generic: no payoff component reads simulated paths directly."""
-    for f in ("payoffs.py", "coupons.py", "bermudan.py", "exercise.py", "analytic.py"):
+    for f in ("payoffs.py", "coupons.py", "path_dependent.py", "bermudan.py", "exercise.py", "analytic.py"):
         src = (ROOT / "pricer" / f).read_text()
         assert "scenario.equity" not in src and ".history[" not in src, f
 

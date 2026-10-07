@@ -33,6 +33,7 @@ from . import conventions as cv
 from . import coupons as _coupons  # noqa: F401  (registers coupon legs)
 from . import market as _market  # noqa: F401  (registers curves, vols)
 from . import observables as obs
+from . import path_dependent as _path_dependent  # noqa: F401  (registers path_dependent)
 from . import rates as _rates  # noqa: F401  (registers hull_white)
 from . import registry
 from .issues import Report
@@ -573,7 +574,12 @@ def _obs_refs(spec) -> set:
     for key in ("observable", "index"):
         if isinstance(getattr(spec, key, None), str):
             out.add(getattr(spec, key))
-    for r in getattr(spec, "range", None) or []:
+    ranges = list(getattr(spec, "range", None) or [])
+    for inp in (getattr(spec, "inputs", None) or {}).values():
+        if inp.observable:
+            out.add(inp.observable)
+        ranges += inp.range or []
+    for r in ranges:
         out.add(r.observable)
     for c in getattr(spec, "conditions", None) or []:
         if isinstance(c, dict) and isinstance(c.get("observable"), str):
@@ -653,7 +659,7 @@ def _build_graph(plan: Plan):
             add(f"leg:{spec.id}", deps, f"{cls.type_name} cashflow paths",
                 lambda r, cls=cls, spec=spec, path=path: cls.cashflows(spec, pctx(r), path))
         for cls, spec, path in trade.events:
-            lids = list(spec.legs) if getattr(cls, "leg_dependent", False) else []
+            lids = cls.leg_refs(spec, v)
             deps = ["fixings"] + ([f"schedule:{spec.observation}"] if getattr(spec, "observation", None) in sched_refs
                                   else []) + [obs_node(o) for o in sorted(_obs_refs(spec))] + [f"leg:{x}" for x in lids]
             add(f"event:{spec.id}", deps, f"{cls.type_name} " + ("exercise amounts and regression state"
