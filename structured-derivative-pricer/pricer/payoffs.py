@@ -72,6 +72,7 @@ class PCtx:
     v: VCtx
     scenario: object            # models.Scenario (None for purely deterministic legs)
     n_paths: int
+    reads: dict | None = None   # observable name -> {date: values} as computed (recorded only when inspecting)
 
     def obs(self, name, dates) -> np.ndarray:
         """Observable values, broadcast to (len(dates), n_paths): the only way a component reads the market

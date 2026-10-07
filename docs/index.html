@@ -335,7 +335,9 @@ pricing: {num_paths: 20000, seed: 7}</code></pre>
 <pre><code class="sh">price.py catalog [KIND]                      # list component types and their fields (JSON)
 price.py validate INPUT [--set k=v ...]      # check the input; print every error at once
 price.py plan     INPUT [--set k=v ...]      # validate + pricing method + component graph
-price.py price    INPUT [--set k=v ...] [--out result.json]</code></pre>
+price.py price    INPUT [--set k=v ...] [--out result.json]
+price.py inspect  INPUT [--set k=v ...] [--node KEY ...] [--out-dir DIR] [--max-paths N]
+                                             # price, then write intermediate results to DIR (CSV/JSON)</code></pre>
 
   <div class="table-wrap"><table>
     <tr><th>argument</th><th>meaning</th></tr>
@@ -350,7 +352,23 @@ price.py price    INPUT [--set k=v ...] [--out result.json]</code></pre>
       applied (index out of range, a non-numeric segment on a list, a value that is not valid YAML) is reported as an input error,
       exit code 2.</td></tr>
     <tr><td><code>--out FILE</code></td><td><code>price</code> only: also write the result JSON to <code>FILE</code>.</td></tr>
+    <tr><td><code>--node KEY</code></td><td><code>inspect</code> only: a graph node to write, repeatable. An exact key from
+      <code>plan</code>’s <code>graph</code> (<code>leg:coupons</code>, <code>curve:USD</code>) or a kind (<code>leg</code>,
+      <code>curve</code>, <code>observable</code>, <code>fixings</code>, <code>price</code>, …). Default: every node.</td></tr>
+    <tr><td><code>--out-dir DIR</code></td><td><code>inspect</code> only: where the files go (default <code>./inspect_&lt;trade id&gt;</code>). It must be new, empty,
+      or an earlier <code>inspect</code> output, whose listed files are removed first so no stale file remains; anything else is exit code 2.</td></tr>
+    <tr><td><code>--max-paths N</code></td><td><code>inspect</code> only: write the first N paths (N &ge; 1) of each path matrix, rounded up to even under antithetic
+      sampling so pairs stay whole. Statistics and the price still use every path.</td></tr>
   </table></div>
+
+  <h3>Intermediate results (<code>inspect</code>)</h3>
+  <p><code>inspect</code> prices the trade exactly as <code>price</code> does (same seed, same paths, same price) and writes the
+    result of every graph node to disk, serialized by data type with nothing recomputed: path and cashflow matrices
+    (one row per path, one column per date, each with a <code>*_stats.csv</code> of per-date mean, std and percentiles),
+    per-path values, schedules, curves (DF and zero rate on the trade’s dates), and scalars, model parameters, calibration
+    and regression coefficients as JSON. It also writes the observable values the legs computed, and the price node’s
+    cashflows and PV per path. Stdout gets only a short manifest (files, shapes, a few summary numbers), never the data,
+    so it stays small at any number of paths.</p>
 
   <h3>Exit codes and output</h3>
   <div class="table-wrap"><table>

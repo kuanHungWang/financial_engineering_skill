@@ -61,13 +61,21 @@ After that, run every command below as `$PY <skill_dir>/scripts/price.py ...`.
 7. **Price:** `price.py price trade.yaml --out result.json`. Use `--set pricing.num_paths=100000`
    to tighten the error without editing the file.
 8. **Check, then report.** See "Reading the result" below.
+9. **Intermediate results, on request** (UAT, model review): `price.py inspect trade.yaml`. See below.
 
 ## Hard rules
 
-- Do **not** write Python to price, simulate, or post-process a trade. Do not edit `pricer/`.
+- Do **not** write Python that builds, prices or simulates a trade, or that changes what the engine produced: no
+  hand-rolled payoff, model, path generator or discounting, no adjusted price. Do not edit `pricer/`.
   If a feature cannot be expressed with the catalog, **stop and tell the user**: name the missing
   component, for example "a range-accrual coupon leg" or "Bermudan issuer call". Custom components
   are a planned extension point (see "Extending"). They are not a workaround to improvise.
+- Python **is** allowed for an analysis sub-task the user asks for, read-only on the files `price.py inspect` wrote
+  (see "Inspecting intermediate results"): whether the paths look reasonable, how dispersion grows with vol, the
+  Bermudan exercise boundary, checking that a path's cashflows times its discount factors give its `pv`, plots.
+  It must not produce new values from new inputs: no re-discounting with another curve, no re-simulation from
+  the paths, no changed payoff or exercise rule. Present its results as diagnostics, never as a price or a
+  sensitivity; a price or a sensitivity comes from `price.py` runs. Say which files it used.
 - Do not approximate a feature you cannot express. For example, do not drop a coupon's knock-out
   condition because it is inconvenient. Say that it is unsupported.
 - Keep `pricing.seed` fixed across runs you compare. Prices are exactly reproducible per seed.
@@ -107,6 +115,50 @@ assumptions (model type, and whether the data is mock). For a calibrated `hull_w
 `mean_reversion` / `volatility` and the worst swaption miss from `model_diagnostics.calibration`. For model risk on path-dependent
 products, it can help to price under both `black_scholes` (local vol from the surface) and
 `heston`, and show the gap.
+
+## Inspecting intermediate results
+
+`price.py inspect trade.yaml [--node KEY ...] [--out-dir DIR] [--max-paths N]` prices the trade exactly as `price`
+does (same seed, same paths, same price) and writes the result of **every graph node** to `DIR`. Always pass
+`--out-dir` under your scratch directory (or a folder the user named), not the user's repository; the default
+`./inspect_<trade id>/` is relative to the current directory. `DIR` must be new, empty, or an earlier inspect output
+(whose listed files are replaced). Nothing is recomputed: each node's own output object is serialized by data type, so
+any node, including one added later, can be inspected. Use it when the user wants to check components by hand
+(UAT), analyse paths, or reconcile a cashflow.
+
+- **Disk vs stdout.** All data goes to disk; stdout gets only `manifest.json`: each file, its node, its shape,
+  and a few summary numbers, plus `not_exported` (QuantLib objects and functions that have no data form). Only the
+  `*_stats.csv` files (per-date mean, std, percentiles) and the small JSON files are safe to read into the
+  conversation; reach anything else through a short Python analysis that prints a small result.
+- **`--node`** takes a key from `plan`'s `graph` (`leg:coupons`, `curve:USD`, `event:autocall`) or a kind (`leg`,
+  `curve`, `observable`, ...). Repeat it; the default is every node. `observable:<underlying>` also works.
+- **`--max-paths N`** writes only the first N paths (rounded up to even under antithetic sampling, so pairs stay
+  whole), e.g. for a spreadsheet. Statistics and the price use every path.
+
+How a node's output becomes files (`<node>` is the key with `:` and any character unsafe in a file name
+replaced by `_`):
+
+| in the node's output | file |
+|---|---|
+| dates x paths table or array (paths, cashflows, amounts, exercise state) | `<node>.<field>.csv`: one row per path (antithetic pairs adjacent), one column per date, plus `<node>.<field>_stats.csv`. A deterministic quantity has one row, `path = all` |
+| one value per path (hit dates, scales) | columns of `<node>.per_path.csv` |
+| list of dates (a schedule) | `<node>.value.csv` |
+| scalars, settings, diagnostics, specs (model parameters, calibration, Bermudan regression coefficients) | `<node>.json` |
+| a yield curve (curve, discount, dividend) | `<node>.csv`: DF and zero rate on every date the trade uses; a curve seen again in another node is written once |
+
+Two outputs do not belong to a single node, and are written from where the run keeps them:
+- `observable_<o>.values.csv` holds the values the legs and events computed on every date they read the
+  observable (past dates from history).
+- the `price` node writes `price.cashflows.csv`, the cashflow paid on each path after termination and exercise,
+  and `price.per_path.csv`, the PV of each path and the termination or exercise that ended it. The price is the
+  mean of `pv`.
+
+`result.json`, `input.json` (the input as priced, after `--set`) and `manifest.json` are always written. Examples:
+the Bermudan exercise boundary is in `event_<id>.state.*.csv` and `event_<id>.amount.csv` against the
+`exercise_date` in `price.per_path.csv`, with the regression in `exercise_policy.json`. A per-leg breakdown that
+reconciles to `pv` is `price.cashflows.csv` times the engine's own `discount_factors.values.csv`. For a question
+such as "does dispersion grow with vol", run `inspect` twice into two directories with the same seed, changing only
+the market file, and compare the `*_stats.csv` files.
 
 ## Coverage
 
