@@ -131,7 +131,13 @@ class BermudanCall(EventFactory):
             v.report.error(path + ".exercise_price", "no future date has an exercise price (all null)")
         for i, r in enumerate(spec.regressors):
             ref = leg_state_ref(v, r)
-            if ref is None:
+            lid, _, state = r.partition(".")
+            if ref is None and lid in v.legs and state in getattr(v.legs[lid][0], "state_names", lambda s: [])(
+                    v.legs[lid][1]):
+                v.report.error(f"{path}.regressors[{i}]", f"'{r}' is both a model underlying or observable and the "
+                                                          f"state '{state}' of leg '{lid}'",
+                               "rename the observable or the leg so the regressor is unambiguous")
+            elif ref is None:
                 obs.known(v, r, f"{path}.regressors[{i}]")
             elif ref[1] not in v.legs[ref[0]][0].state_names(v.legs[ref[0]][1]):
                 v.report.error(f"{path}.regressors[{i}]", f"leg '{ref[0]}' has no state '{ref[1]}'",
@@ -165,13 +171,8 @@ class BermudanCall(EventFactory):
         return [(d, p) for d, p in zip(all_dates, price) if d > v.valuation_date and not np.isnan(p)]
 
     @staticmethod
-    def state_regressors(spec):
-        """Regressors that name a leg's state: '<leg id>.<state>' (observables never contain a dot here)."""
-        return [r for r in spec.regressors if "." in r]
-
-    @classmethod
-    def leg_refs(cls, spec) -> list:
-        return sorted({r.split(".", 1)[0] for r in cls.state_regressors(spec)})
+    def leg_refs(spec, v: VCtx) -> list:
+        return sorted({ref[0] for ref in (leg_state_ref(v, r) for r in spec.regressors) if ref})
 
     @classmethod
     def fixing_dates(cls, spec, v: VCtx, path):
@@ -204,9 +205,9 @@ class BermudanCall(EventFactory):
                 units, k = o.notional, o.strike
             phi = 1.0 if o.option_type == "call" else -1.0
             amount += units * np.maximum(phi * (x - k), 0.0)
-        cols = [PathDependentLeg.state_on(legs[r.split(".", 1)[0]], r.split(".", 1)[1], ds)
-                if r in cls.state_regressors(spec) and r.split(".", 1)[0] in legs else p.obs(r, ds)
-                for r in spec.regressors]
+        refs = [leg_state_ref(v, r) for r in spec.regressors]
+        cols = [PathDependentLeg.state_on(legs[ref[0]], ref[1], ds) if ref else p.obs(r, ds)
+                for r, ref in zip(spec.regressors, refs)]
         if not spec.regressors:
             cols += [p.obs(u, ds) for u in v.underlyings]
             if p.scenario.rates is not None:

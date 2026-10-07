@@ -32,6 +32,9 @@ _CMP = {ast.Lt: np.less, ast.LtE: np.less_equal, ast.Gt: np.greater, ast.GtE: np
         ast.Eq: np.equal, ast.NotEq: np.not_equal}
 
 
+MAX_LENGTH = 2000      # characters; also bounds the nesting depth the recursive parser and checker see
+
+
 class ExprError(ValueError):
     pass
 
@@ -49,13 +52,17 @@ class Expr:
     def __init__(self, text: str):
         if not isinstance(text, str) or not text.strip():
             raise ExprError("expected a non-empty formula string")
+        if len(text) > MAX_LENGTH:
+            raise ExprError(f"formula has {len(text)} characters; at most {MAX_LENGTH}")
         self.text = text
+        self.names, self.prev_names, self.nonlinear = set(), set(), []
         try:
             self.tree = ast.parse(text.strip(), mode="eval").body
+            self._check(self.tree)
         except SyntaxError as e:
             raise ExprError(f"cannot parse '{text}': {e.msg}") from None
-        self.names, self.prev_names, self.nonlinear = set(), set(), []
-        self._check(self.tree)
+        except (RecursionError, MemoryError):
+            raise ExprError("formula is nested too deeply; split it with `define`") from None
 
     # ------------------------------------------------------------------ static checks
     def _check(self, n) -> set:

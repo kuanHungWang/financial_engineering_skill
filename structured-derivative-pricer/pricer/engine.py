@@ -659,7 +659,7 @@ def _build_graph(plan: Plan):
             add(f"leg:{spec.id}", deps, f"{cls.type_name} cashflow paths",
                 lambda r, cls=cls, spec=spec, path=path: cls.cashflows(spec, pctx(r), path))
         for cls, spec, path in trade.events:
-            lids = [x for x in cls.leg_refs(spec) if x in v.legs]
+            lids = cls.leg_refs(spec, v)
             deps = ["fixings"] + ([f"schedule:{spec.observation}"] if getattr(spec, "observation", None) in sched_refs
                                   else []) + [obs_node(o) for o in sorted(_obs_refs(spec))] + [f"leg:{x}" for x in lids]
             add(f"event:{spec.id}", deps, f"{cls.type_name} " + ("exercise amounts and regression state"

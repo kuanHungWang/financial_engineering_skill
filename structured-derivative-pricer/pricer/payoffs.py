@@ -466,7 +466,7 @@ class EventFactory:
     leg_dependent = False
 
     @classmethod
-    def leg_refs(cls, spec) -> list:
+    def leg_refs(cls, spec, v: VCtx) -> list:
         """Ids of the legs whose results `evaluate` receives."""
         return list(spec.legs) if cls.leg_dependent else []
 

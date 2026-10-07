@@ -417,14 +417,19 @@ class PathDependentLeg(_PeriodLeg):
             env.update(state)
             for name, e in defines:
                 env[name] = e(env)
-            new = {name: np.broadcast_to(e(env), (n,)) for name, e in evolves}
+            new = {name: np.array(np.broadcast_to(e(env), (n,))) for name, e in evolves}
             env.update(new)
             pay[j] = np.broadcast_to(payoff(env, state), (n,))
-            for name, value in [("payoff", pay[j])] + [(f"state.{k}.evolve", new[k]) for k in new]:
-                if not np.isfinite(value).all():
+            for name, value in [(f"state.{k}.evolve", new[k]) for k in new] + [("payoff", pay[j])]:
+                bad = ~np.isfinite(value)
+                if bad.any():
+                    # a define may be non-finite where a where()/min()/max() masks it, so it is only named here,
+                    # as the likely cause, when a state or the payoff it feeds is non-finite on the same paths
+                    causes = [f"define.{d}" for d, _ in defines if not np.isfinite(
+                        np.broadcast_to(env[d], (n,))[bad]).all()]
                     raise FloatingPointError(f"{path}.{name}: non-finite value in the period {q.start}..{q.end} on "
-                                             f"{int((~np.isfinite(value)).sum())} path(s) (division by zero, log or "
-                                             "sqrt of a negative number?)")
+                                             f"{int(bad.sum())} path(s) (division by zero, log or sqrt of a negative "
+                                             "number?)" + (f"; non-finite on those paths: {causes}" if causes else ""))
             for k in new:
                 hist[k][j] = new[k]
             state = new
@@ -464,8 +469,10 @@ class PathDependentLeg(_PeriodLeg):
 
 
 def leg_state_ref(v: VCtx, name):
-    """(leg id, state name) when `name` is '<leg id>.<state>' of a leg with states; None otherwise."""
-    if name in v.observables or "." not in name:
+    """(leg id, state name) when `name` is '<leg id>.<state>' of a leg with states; None otherwise. A model
+    underlying or declared observable of that name (a ticker such as BRK.B) is never a leg state: the one
+    classifier for validation, reads and graph wiring."""
+    if name in v.observables or name in v.underlyings or "." not in name:
         return None
     lid, state = name.split(".", 1)
     if lid in v.legs and hasattr(v.legs[lid][0], "state_names"):

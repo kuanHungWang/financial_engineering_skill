@@ -290,3 +290,53 @@ def test_non_finite_payoff_is_an_error_not_a_price():
     plan = build_plan(doc(HW, [leg], observables={"L3M": L3M}), EX)
     with pytest.raises(FloatingPointError, match="trade.legs\\[0\\].payoff: non-finite"):
         run(plan)
+
+
+# ---------------------------------------------------------------- review regressions (PR #10)
+def test_dotted_underlying_is_a_regressor_not_a_leg_state():
+    """One classifier: a ticker such as BRK.B is read as the underlying even when a leg 'BRK' exists, and
+    observable names may contain dots."""
+    m = market()
+    m["equities"]["BRK.B"] = dict(m["equities"]["AAA"])
+    model = {"type": "black_scholes", "underlying": "BRK.B", "discount_curve": "USD-FLAT"}
+    obsv = {"PERF.B": {"type": "equity", "underlying": "BRK.B", "mode": "performance"}}
+    leg = pd_leg(id="BRK", inputs={"X": {"observable": "PERF.B", "fixing": "in_arrears"}},
+                 state={"B": {"initial": 0.0, "evolve": "B + X"}}, payoff="0.01 * tau")
+    call = {"id": "call", "type": "bermudan_call", "observation": "q", "exerciser": "issuer", "exercise_price": 0,
+            "regressors": ["BRK.B", "PERF.B"]}
+    d = doc(model, [leg], [call], observables=obsv, maturity="2027-09-28")
+    d["market_data"] = m
+    assert "is both a model underlying or observable and the state 'B'" in \
+        errors(d)["trade.termination_events[0].regressors[0]"]
+    d["trade"]["legs"][0]["state"] = {"S": {"initial": 0.0, "evolve": "S + X"}}
+    plan = build_plan(copy.deepcopy(d), EX)
+    assert plan.report.ok, [str(i) for i in plan.report.errors]
+    assert "leg:BRK" not in plan.nodes["event:call"].deps
+    assert run(plan)["price"] > 0
+
+
+def test_known_state_keeps_absolute_period_index():
+    """is_first / period count from the first period of the schedule, also when evolution starts at known_state."""
+    sched = {"q": {"type": "dates", "dates": ["2026-06-30", "2026-09-28", "2026-12-28", "2027-03-29"]}}
+    leg = pd_leg(state={"A": {"initial": 0.0, "evolve": "A + 1"}}, payoff="(period + 10 * is_first) * 0.001",
+                 known_state={"period_end": "2026-09-28", "values": {"A": 2.0}})
+    r = price(doc(BS, [leg], schedules=sched, maturity="2027-03-29", effective_date="2026-03-30"))
+    amounts = [c["expected_amount"] for c in r["expected_cashflows"]]
+    assert amounts == pytest.approx([N * 0.002, N * 0.003], rel=1e-12)
+
+
+def test_non_finite_state_names_the_define_that_caused_it():
+    leg = dict(snowball(), define={"d": "log(L - 1)"}, state={"C": {"initial": 0.0, "evolve": "C + d"}})
+    plan = build_plan(doc(HW, [leg], observables={"L3M": L3M}), EX)
+    with pytest.raises(FloatingPointError, match=r"state\.C\.evolve.*\['define\.d'\]"):
+        run(plan)
+    # a non-finite define masked by where() is fine
+    leg["state"]["C"]["evolve"] = "C + where(L > 1, d, 0)"
+    assert price(doc(HW, [leg], observables={"L3M": L3M}))["price"] == 0
+
+
+def test_formula_length_and_nesting_are_bounded():
+    with pytest.raises(ExprError, match="at most"):
+        Expr("x + " * 600 + "x")
+    with pytest.raises(ExprError, match="nested too deeply|cannot parse"):
+        Expr("(" * 900 + "x" + ")" * 900)
