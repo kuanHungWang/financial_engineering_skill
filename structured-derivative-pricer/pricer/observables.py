@@ -150,8 +150,10 @@ def evaluate(p, name, dates) -> np.ndarray:
         x = cls.combine(spec, [evaluate(p, n, dates) for n in cls.deps(spec)])
     else:
         x = evaluate_leaf(p, cls, spec, dates)
-    if getattr(p, "reads", None) is not None:          # inspecting: keep what was computed, date by date
-        p.reads.setdefault(name, {}).update(zip(dates, x))
+    if getattr(p, "reads", None) is not None:
+        # Inspecting: keep a copy of what was computed, date by date, so a caller changing x in place cannot alter
+        # the record. One scenario gives one value per (name, date), so a later read of the same date only repeats it.
+        p.reads.setdefault(name, {}).update(zip(dates, np.array(x, copy=True)))
     return x
 
 

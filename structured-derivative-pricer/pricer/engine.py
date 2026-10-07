@@ -698,7 +698,7 @@ INSPECT_FLOWS = "_inspect_flows"   # results key: the price node's per-path cash
 
 def run(plan: Plan, keep: dict | None = None) -> dict:
     """Execute the graph. Library chatter goes to stderr so stdout stays JSON.
-    keep: when given, receives every node result under keep["results"] (see pricer/inspect.py)."""
+    keep: when given, receives every node result under keep["results"] (see pricer/inspection.py)."""
     if not plan.report.ok:
         raise RuntimeError("plan has validation errors; fix them before running")
     with contextlib.redirect_stdout(sys.stderr):
@@ -987,7 +987,7 @@ def _aggregate_mc(plan: Plan, r) -> dict:
         ex_diag["exercise_payment_pv"] = owner_pv("exercise", ex_spec.id)
         events_out[ex_spec.id] = ex_diag
 
-    if INSPECT_FLOWS in r:
+    if INSPECT_FLOWS in r:      # Monte Carlo only: an analytic price node is exported as its result dict
         r[INSPECT_FLOWS].update(rows=f.rows, pv=pv, first=f.first, owner=f.owner,
                                 events=[sp.id for sp, _ in f.events], exercise_date=ex_date)
     mean = float(pv.mean())

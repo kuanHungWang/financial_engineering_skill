@@ -26,6 +26,7 @@ import dataclasses
 import datetime as dt
 import json
 import math
+import re
 from pathlib import Path
 
 import numpy as np
@@ -70,15 +71,24 @@ def select(plan: Plan, wanted) -> list:
 
 
 def inspect(plan: Plan, out_dir, nodes=None, max_paths: int | None = None) -> tuple[dict, dict]:
-    """Price, then write the selected nodes. Returns (pricing result, manifest)."""
+    """Price, then write the selected nodes. Returns (pricing result, manifest).
+
+    out_dir must be new, empty, or an earlier inspect output: the files its manifest lists are removed first, so no
+    stale file from an earlier run sits next to the new manifest."""
     chosen = select(plan, nodes)
+    if max_paths is not None and (isinstance(max_paths, bool) or not isinstance(max_paths, int) or max_paths < 1):
+        raise InspectError(f"--max-paths must be a positive integer, got {max_paths!r}")
+    out = Path(out_dir)
+    _clear(out)
     keep = {}
     result = run(plan, keep)
     r = keep["results"]
-    out = Path(out_dir)
     out.mkdir(parents=True, exist_ok=True)
     n = r["fixings"].n_paths if "fixings" in r else 1
-    w = _Writer(out, max_paths, n, plan)
+    k = n if max_paths is None else min(max_paths, n)
+    if plan.input.pricing.antithetic and k % 2:      # keep antithetic pairs (rows 2i, 2i+1) whole
+        k = min(k + 1, n)
+    w = _Writer(out, k, n, plan)
     (out / "result.json").write_text(json.dumps(_plain(result), indent=2, default=str))
     w.files.append({"file": "result.json", "node": "price", "content": "the pricing result (as `price --out`)"})
     (out / "input.json").write_text(json.dumps(_plain(plan.input.model_dump(mode="json")), indent=2, default=str))
@@ -100,7 +110,7 @@ def inspect(plan: Plan, out_dir, nodes=None, max_paths: int | None = None) -> tu
         "price": result["price"], "std_error": result.get("std_error"),
         "num_paths": result.get("num_paths"), "seed": result.get("seed"),
         "out_dir": str(out.resolve()),
-        "paths_written": min(max_paths or n, n) if plan.method == "mc" else None,
+        "paths_written": k if plan.method == "mc" else None,
         "layout": "path matrices: rows = paths (antithetic pairs are adjacent rows), columns = dates; a deterministic "
                   "quantity has one row with path 'all'; each path matrix has a _stats.csv computed on every path",
         "files": w.files,
@@ -113,24 +123,24 @@ def inspect(plan: Plan, out_dir, nodes=None, max_paths: int | None = None) -> tu
 
 # ------------------------------------------------------------------ generic serialization
 class _Writer:
-    def __init__(self, out: Path, max_paths, n_paths, plan):
-        self.out, self.max_paths, self.n, self.plan = out, max_paths, n_paths, plan
+    def __init__(self, out: Path, k_paths, n_paths, plan):
+        self.out, self.k, self.n, self.plan = out, k_paths, n_paths, plan
         self.files, self.skipped = [], []
         self.curves = {}            # tabulated curve -> file already written
 
     # one node: split its result into JSON-able parts and tables
     def node(self, key, value):
-        base = key.replace(":", "_")
+        base = safe_name(key)
         meta, per_path = {}, {}
         self._walk(key, base, "", value, meta, per_path)
         if per_path:
-            k = min(self.n, self.max_paths or self.n)
-            df = pd.DataFrame({c: v[:k] for c, v in per_path.items()})
-            df.insert(0, "path", range(k))
+            df = pd.DataFrame({c: v[:self.k] for c, v in per_path.items()})
+            df.insert(0, "path", range(self.k))
             self._csv(f"{base}.per_path.csv", key, df, content="one value per path: " + ", ".join(per_path))
         if meta:
-            (self.out / f"{base}.json").write_text(json.dumps(_plain(meta), indent=2, default=str))
-            self.files.append({"file": f"{base}.json", "node": key, "content": "scalars, settings and diagnostics"})
+            file = safe_name(f"{base}.json")
+            (self.out / file).write_text(json.dumps(_plain(meta), indent=2, default=str))
+            self.files.append({"file": file, "node": key, "content": "scalars, settings and diagnostics"})
 
     def _walk(self, key, base, field, x, meta, per_path, dates=None):
         name = field or "value"
@@ -201,6 +211,7 @@ class _Writer:
 
     # ------------------------------------------------------------------ formats
     def _csv(self, file, key, df, content, **extra):
+        file = safe_name(file)
         df.to_csv(self.out / file, index=False, float_format=FLOAT)
         self.files.append({"file": file, "node": key, "content": content, "rows": len(df),
                            "columns": len(df.columns), **extra})
@@ -209,11 +220,11 @@ class _Writer:
         """(dates x paths) or (dates x 1), written transposed: rows = paths, columns = dates, plus per-date stats."""
         x = np.asarray(values, dtype=float)
         det = x.shape[1] == 1
-        shown = x if det or not self.max_paths else x[:, :self.max_paths]
+        shown = x if det else x[:, :self.k]
         df = pd.DataFrame(shown.T, columns=_labels(labels))
         df.insert(0, "path", ["all"] if det else range(shown.shape[1]))
         stats = _stats(labels, x)
-        sfile = file.replace(".csv", "_stats.csv")
+        sfile = safe_name(file[:-len(".csv")] + "_stats.csv")
         stats.to_csv(self.out / sfile, index=False, float_format=FLOAT)
         summary = {"dates": len(labels), "first": _iso(labels[0]), "last": _iso(labels[-1])} if len(labels) else {}
         if len(labels):
@@ -240,7 +251,7 @@ class _Writer:
             if ref not in self.files:
                 self.files.append(ref)
             return
-        self.curves[sig] = f"{base}.csv"
+        self.curves[sig] = safe_name(f"{base}.csv")
         self._csv(f"{base}.csv", key, df,
                   content=f"discount factor and continuously-compounded zero rate ({h.dayCounter().name()}) on the "
                           "valuation date, every simulation and payment date, and maturity")
@@ -252,20 +263,19 @@ class _Writer:
         rows = [np.atleast_1d(values[d]) for d in ds]
         m = max(len(v) for v in rows)
         x = np.vstack([np.broadcast_to(v, (m,)) for v in rows])
-        self._matrix(key, f"{key.replace(':', '_')}.values.csv", ds, x)
+        self._matrix(key, f"{safe_name(key)}.values.csv", ds, x)
 
     def price_flows(self, key, fl):
         """The price node's per-path cashflows (after termination and exercise) and PV, as it aggregated them."""
         base = key
         n = len(fl["pv"])
-        k = min(n, self.max_paths or n)
+        k = self.k
         cols = {}
         for kind, oid, d, cf in fl["rows"]:
-            label = f"{kind}:{oid}:{d.isoformat()}"
-            lab, i = label, 2
-            while lab in cols:
-                lab, i = f"{label}#{i}", i + 1
-            cols[lab] = np.broadcast_to(cf, (n,))[:k]
+            label, i = flow_label(kind, oid, d), 2
+            while label in cols:
+                label, i = flow_label(kind, oid, d, i), i + 1
+            cols[label] = np.broadcast_to(cf, (n,))[:k]
         flows = pd.DataFrame(cols)
         flows.insert(0, "path", range(k))
         self._csv(f"{base}.cashflows.csv", key, flows,
@@ -280,6 +290,42 @@ class _Writer:
 
 
 # ------------------------------------------------------------------ helpers
+def flow_label(kind, owner, date, repeat=1) -> str:
+    """Column label of price.cashflows.csv: kind:owner:date, with #2, #3 ... for a repeated (kind, owner, date)."""
+    label = f"{kind}:{owner}:{date.isoformat()}"
+    return label if repeat == 1 else f"{label}#{repeat}"
+
+
+def flow_date(label) -> str:
+    """The payment date (YYYY-MM-DD) of a price.cashflows.csv column label."""
+    return label.rsplit(":", 1)[1].split("#")[0]
+
+
+def safe_name(name) -> str:
+    """A file name that stays inside the output directory whatever the trade, leg or observable ids contain."""
+    out = re.sub(r"[^A-Za-z0-9._-]", "_", str(name)).lstrip(".")
+    return out or "_"
+
+
+def _clear(out: Path):
+    """Remove the files an earlier inspect run listed in its manifest; refuse a directory inspect did not write."""
+    if not out.exists():
+        return
+    if not out.is_dir():
+        raise InspectError(f"--out-dir {out} exists and is not a directory")
+    entries = list(out.iterdir())
+    if not entries:
+        return
+    manifest = out / "manifest.json"
+    try:
+        old = json.loads(manifest.read_text())
+    except (OSError, ValueError):
+        raise InspectError(f"--out-dir {out} is not empty and holds no inspect manifest.json; "
+                           "use a new or empty directory") from None
+    names = {"manifest.json"} | {f.get(k) for f in old.get("files", []) for k in ("file", "stats_file")}
+    for name in names:
+        if isinstance(name, str) and name == safe_name(name) and (out / name).is_file():
+            (out / name).unlink()
 def _is_date_list(x):
     return isinstance(x, (list, tuple)) and len(x) > 0 and all(isinstance(d, dt.date) for d in x)
 

@@ -355,8 +355,10 @@ price.py inspect  INPUT [--set k=v ...] [--node KEY ...] [--out-dir DIR] [--max-
     <tr><td><code>--node KEY</code></td><td><code>inspect</code> only: a graph node to write, repeatable. An exact key from
       <code>plan</code>’s <code>graph</code> (<code>leg:coupons</code>, <code>curve:USD</code>) or a kind (<code>leg</code>,
       <code>curve</code>, <code>observable</code>, <code>fixings</code>, <code>price</code>, …). Default: every node.</td></tr>
-    <tr><td><code>--out-dir DIR</code></td><td><code>inspect</code> only: where the files go (default <code>./inspect_&lt;trade id&gt;</code>).</td></tr>
-    <tr><td><code>--max-paths N</code></td><td><code>inspect</code> only: write the first N paths of each path matrix. Statistics and the price still use every path.</td></tr>
+    <tr><td><code>--out-dir DIR</code></td><td><code>inspect</code> only: where the files go (default <code>./inspect_&lt;trade id&gt;</code>). It must be new, empty,
+      or an earlier <code>inspect</code> output, whose listed files are removed first so no stale file remains; anything else is exit code 2.</td></tr>
+    <tr><td><code>--max-paths N</code></td><td><code>inspect</code> only: write the first N paths (N &ge; 1) of each path matrix, rounded up to even under antithetic
+      sampling so pairs stay whole. Statistics and the price still use every path.</td></tr>
   </table></div>
 
   <h3>Intermediate results (<code>inspect</code>)</h3>

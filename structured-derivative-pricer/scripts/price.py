@@ -28,7 +28,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 warnings.filterwarnings("ignore")
 
 from pricer import OverrideError, apply_overrides, build_plan, catalog, load_document, run  # noqa: E402
-from pricer.inspection import InspectError, inspect, select  # noqa: E402
+from pricer.inspection import InspectError, inspect, safe_name, select  # noqa: E402
 
 
 def _dump(obj):
@@ -53,9 +53,11 @@ def main(argv=None):
             p.add_argument("--node", action="append", default=[], metavar="KEY",
                            help="graph node to write (repeatable): an exact key from `plan` (leg:coupon, curve:USD) "
                                 "or a kind (leg, curve, observable, fixings, price, ...); default: every node")
-            p.add_argument("--out-dir", help="directory for the files (default: ./inspect_<trade id>)")
+            p.add_argument("--out-dir", help="directory for the files (default: ./inspect_<trade id>); must be new, "
+                                             "empty, or an earlier inspect output, whose listed files are replaced")
             p.add_argument("--max-paths", type=int, metavar="N",
-                           help="write only the first N paths of path matrices (statistics still use all paths)")
+                           help="write only the first N paths of path matrices, rounded up to keep antithetic "
+                                "pairs whole (statistics still use all paths)")
     a = ap.parse_args(argv)
 
     if a.cmd == "catalog":
@@ -82,14 +84,21 @@ def main(argv=None):
         return 0 if plan.report.ok else 2
 
     if a.cmd == "inspect":
+        if a.max_paths is not None and a.max_paths < 1:
+            _dump({"ok": False, "errors": [{"severity": "error", "path": "--max-paths",
+                                            "message": f"must be a positive integer, got {a.max_paths}"}]})
+            return 2
         try:
             select(plan, a.node)
         except InspectError as e:
             _dump({"ok": False, "errors": [{"severity": "error", "path": "--node", "message": str(e)}]})
             return 2
-        out_dir = a.out_dir or f"inspect_{plan.input.trade.id}"
+        out_dir = a.out_dir or f"inspect_{safe_name(plan.input.trade.id)}"
         try:
             _, manifest = inspect(plan, out_dir, a.node, a.max_paths)
+        except InspectError as e:          # e.g. --out-dir holds files inspect did not write
+            _dump({"ok": False, "errors": [{"severity": "error", "path": "--out-dir", "message": str(e)}]})
+            return 2
         except Exception as e:
             _dump({"ok": False, "stage": "inspect", "error": f"{type(e).__name__}: {e}",
                    "traceback": traceback.format_exc().splitlines()[-6:]})
