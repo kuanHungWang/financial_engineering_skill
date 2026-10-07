@@ -345,7 +345,10 @@ price.py price    INPUT [--set k=v ...] [--out result.json]</code></pre>
       <code>observable</code>, <code>leg</code>, <code>condition</code>, <code>event</code>, <code>analytic</code>. Omit for all.</td></tr>
     <tr><td><code>--set PATH=VALUE</code></td><td>Override a field without editing the file. Repeatable. <code>PATH</code> is dot-separated
       mapping keys (e.g. <code>pricing.num_paths</code>, <code>valuation_date</code>); <code>VALUE</code> is parsed as YAML.
-      It cannot index into lists, so a single leg’s field cannot be overridden this way.</td></tr>
+      A numeric segment indexes into a list, counting from 0: <code>trade.legs.0.rate=0.09</code> (or <code>trade.legs[0].rate=0.09</code>)
+      sets the first leg’s rate. Missing mapping keys are created, but a list index must already exist. A path that cannot be
+      applied (index out of range, a non-numeric segment on a list, a value that is not valid YAML) is reported as an input error,
+      exit code 2.</td></tr>
     <tr><td><code>--out FILE</code></td><td><code>price</code> only: also write the result JSON to <code>FILE</code>.</td></tr>
   </table></div>
 
@@ -361,6 +364,9 @@ price.py price    INPUT [--set k=v ...] [--out result.json]</code></pre>
   <h3>Useful recipes</h3>
 <pre><code class="sh"># reprice the same trade on a later date (seasoned trade)
 $PY scripts/price.py price trade.yaml --set valuation_date=2026-11-30 --set market_data=market_1130.yaml
+
+# bump the coupon rate on the first leg
+$PY scripts/price.py price examples/autocallable_note.yaml --set trade.legs.0.rate=0.09
 
 # force Monte Carlo on a trade that has a closed form, to see the cross-check
 $PY scripts/price.py price examples/vanilla_call.yaml --set pricing.method=mc

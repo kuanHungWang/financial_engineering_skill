@@ -7,6 +7,8 @@
     price.py price INPUT [--set k=v ...] [--out result.json]
 
 INPUT is a YAML/JSON file, '-' for stdin, or a literal YAML/JSON string.
+--set PATH=VALUE: PATH is dot-separated; numeric segments index lists (trade.legs.0.rate,
+or trade.legs[0].rate). VALUE is parsed as YAML.
 Exit codes: 0 ok, 2 invalid input (see errors), 1 runtime failure.
 """
 from __future__ import annotations
@@ -21,7 +23,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 warnings.filterwarnings("ignore")
 
-from pricer import apply_overrides, build_plan, catalog, load_document, run  # noqa: E402
+from pricer import OverrideError, apply_overrides, build_plan, catalog, load_document, run  # noqa: E402
 
 
 def _dump(obj):
@@ -38,7 +40,8 @@ def main(argv=None):
         p = sub.add_parser(name)
         p.add_argument("input")
         p.add_argument("--set", action="append", default=[], metavar="PATH=VALUE",
-                       help="override a field, e.g. --set pricing.num_paths=50000")
+                       help="override a field, e.g. --set pricing.num_paths=50000; "
+                            "numeric segments index lists: --set trade.legs.0.rate=0.09")
         if name == "price":
             p.add_argument("--out", help="also write the result JSON to this file")
     a = ap.parse_args(argv)
@@ -52,7 +55,11 @@ def main(argv=None):
     except Exception as e:  # unreadable YAML is an input error, not a crash
         _dump({"ok": False, "errors": [{"severity": "error", "path": "", "message": f"cannot parse input: {e}"}]})
         return 2
-    apply_overrides(doc, a.set)
+    try:
+        apply_overrides(doc, a.set)
+    except OverrideError as e:
+        _dump({"ok": False, "errors": [{"severity": "error", "path": e.path, "message": str(e)}]})
+        return 2
     plan = build_plan(doc, base)
 
     if a.cmd == "validate":
