@@ -15,6 +15,7 @@ from pydantic import Field, model_validator
 
 from . import observables as obs
 from .observables import RATES
+from .path_dependent import PathDependentLeg, leg_state_ref
 from .payoffs import (EventFactory, FixedAmount, PCtx, VCtx, _check_ref, _check_schedule, merge_requirements)
 from .registry import SpecModel, register
 from .spec import DateLike
@@ -103,8 +104,10 @@ class BermudanCall(EventFactory):
         exercise_option: Optional[ExerciseOption] = Field(
             None, description="add the intrinsic value of an option on exercise (Bermudan option: price 0 + option)")
         regressors: list[str] = Field(
-            default_factory=list, description="observables / underlyings the continuation value is regressed on; "
-                                              "default: every model underlying, plus the short rate under hull_white")
+            default_factory=list, description="observables / underlyings the continuation value is regressed on, or "
+                                              "a path_dependent leg's state as '<leg id>.<state>' (e.g. a snowball's "
+                                              "coupon); default: every model underlying, plus the short rate under "
+                                              "hull_white")
         degree: int = Field(2, ge=1, le=4, description="polynomial degree of the regression basis")
         settle_on_event_date: bool = Field(
             True, description="a cashflow paid on the exercise date is still paid (the coupon before the call)")
@@ -127,7 +130,12 @@ class BermudanCall(EventFactory):
         if price is not None and np.isnan(price[[all_dates.index(d) for d in dates]]).all():
             v.report.error(path + ".exercise_price", "no future date has an exercise price (all null)")
         for i, r in enumerate(spec.regressors):
-            obs.known(v, r, f"{path}.regressors[{i}]")
+            ref = leg_state_ref(v, r)
+            if ref is None:
+                obs.known(v, r, f"{path}.regressors[{i}]")
+            elif ref[1] not in v.legs[ref[0]][0].state_names(v.legs[ref[0]][1]):
+                v.report.error(f"{path}.regressors[{i}]", f"leg '{ref[0]}' has no state '{ref[1]}'",
+                               f"its states: {v.legs[ref[0]][0].state_names(v.legs[ref[0]][1])}")
         if not spec.regressors and not v.underlyings and not v.stochastic_rates:
             v.report.error(path + ".regressors", "the model simulates nothing to regress on",
                            "name the observables that drive the exercise decision")
@@ -156,10 +164,19 @@ class BermudanCall(EventFactory):
         price = per_date(v, spec.exercise_price, all_dates)
         return [(d, p) for d, p in zip(all_dates, price) if d > v.valuation_date and not np.isnan(p)]
 
+    @staticmethod
+    def state_regressors(spec):
+        """Regressors that name a leg's state: '<leg id>.<state>' (observables never contain a dot here)."""
+        return [r for r in spec.regressors if "." in r]
+
+    @classmethod
+    def leg_refs(cls, spec) -> list:
+        return sorted({r.split(".", 1)[0] for r in cls.state_regressors(spec)})
+
     @classmethod
     def fixing_dates(cls, spec, v: VCtx, path):
         ds = [d for d, _ in cls.dates(spec, v)]
-        reqs = [obs.requirements(v, r, ds) for r in spec.regressors]
+        reqs = [obs.requirements(v, r, ds) for r in spec.regressors if leg_state_ref(v, r) is None]
         if not spec.regressors:
             reqs += [obs.requirements(v, u, ds) for u in v.underlyings] + ([{RATES: ds}] if v.stochastic_rates else [])
         o = spec.exercise_option
@@ -187,7 +204,9 @@ class BermudanCall(EventFactory):
                 units, k = o.notional, o.strike
             phi = 1.0 if o.option_type == "call" else -1.0
             amount += units * np.maximum(phi * (x - k), 0.0)
-        cols = [p.obs(r, ds) for r in spec.regressors]
+        cols = [PathDependentLeg.state_on(legs[r.split(".", 1)[0]], r.split(".", 1)[1], ds)
+                if r in cls.state_regressors(spec) and r.split(".", 1)[0] in legs else p.obs(r, ds)
+                for r in spec.regressors]
         if not spec.regressors:
             cols += [p.obs(u, ds) for u in v.underlyings]
             if p.scenario.rates is not None:

@@ -213,6 +213,9 @@ def validate_all(v):
     for name in v.observables:
         if name in v.underlyings:
             v.report.error(f"observables.{name}", f"'{name}' is a model underlying; pick another observable name")
+        if "." in name:
+            v.report.error(f"observables.{name}", "an observable name may not contain '.' (it would read as "
+                                                  "'<leg id>.<state>' in a bermudan_call regressor)")
         visit(name, ())
 
 

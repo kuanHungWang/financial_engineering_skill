@@ -1,0 +1,64 @@
+# 2Y worst-of phoenix autocallable with memory coupon on SPX and NDX, investor's view, notional 1,000,000.
+#   - quarterly observation of the worst-of performance W = min(SPX/SPX_0, NDX/NDX_0)
+#   - coupon 2.5% per quarter paid if W >= 70% on the observation date, plus every earlier coupon not yet paid
+#     (memory)
+#   - autocall: if W >= 100% on an observation date before maturity, par is repaid on that date (with that
+#     date's coupon)
+#   - at maturity, if not autocalled: par, minus a short worst-of put struck at 100% knocked in if W <= 60% at
+#     maturity (European knock-in)
+# The memory coupon is a path_dependent leg. Its state U is the unpaid coupons carried forward: each period
+# either pays U + c (and U resets to 0) or adds c to U.
+valuation_date: 2026-09-28
+market_data: market/mock_market_multi.yaml
+
+model:
+  type: black_scholes
+  underlyings: [SPX, NDX]
+  correlation: [[1.0, 0.85], [0.85, 1.0]]
+  discount_curve: USD
+
+observables:
+  SPX_PERF: {type: equity, underlying: SPX, mode: performance}
+  NDX_PERF: {type: equity, underlying: NDX, mode: performance}
+  WORST: {type: min_of, observables: [SPX_PERF, NDX_PERF]}
+
+schedules:
+  quarterly: {type: generated, frequency: 3M, calendar: UnitedStates.NYSE, convention: ModifiedFollowing}
+  autocall_dates: {type: generated, frequency: 3M, end: 21M, calendar: UnitedStates.NYSE,
+                   convention: ModifiedFollowing}
+  final: {type: dates, dates: [maturity]}
+
+trade:
+  id: PHOENIX-MEM-2Y
+  maturity: 2Y
+  legs:
+    - id: coupons
+      type: path_dependent
+      notional: 1000000
+      schedule: quarterly
+      inputs:
+        W: {observable: WORST, fixing: in_arrears}     # observed on the period end date
+      parameters:
+        c: 0.025          # coupon per quarter (not annualised)
+        B: 0.70           # coupon barrier
+      define:
+        hit: "W >= B"
+      state:
+        U: {initial: 0.0, evolve: "where(hit, 0, U + c)"}
+      payoff: "hit * (prev(U) + c)"
+    - {id: principal, type: fixed_amount, amount: 1000000, payment_date: maturity}
+    - id: short_ki_put
+      type: option_payoff
+      observable: WORST
+      option_type: put
+      strike: 1.0
+      strike_mode: absolute
+      notional: 1000000
+      position: short
+      conditions:
+        - {type: knock_in, observable: WORST, direction: down, barrier: 0.60, observation: final}
+  termination_events:
+    - {id: autocall, type: knock_out, observable: WORST, direction: up, barrier: 1.0,
+       observation: autocall_dates, rebate: 1000000, rebate_payment: at_hit, settle_on_event_date: true}
+
+pricing: {num_paths: 20000, seed: 7}

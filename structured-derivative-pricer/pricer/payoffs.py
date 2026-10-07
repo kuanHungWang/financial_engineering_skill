@@ -87,6 +87,8 @@ class LegResult:
     amounts: pd.DataFrame                   # rows = payment dates (may repeat), columns = paths
     diagnostics: dict = field(default_factory=dict)
     sign: float = 1.0                       # +1 long, -1 short (amounts already carry it)
+    states: dict = field(default_factory=dict)          # path_dependent: state -> (date it is known x paths)
+    initial_states: dict = field(default_factory=dict)  # path_dependent: state -> value before those dates
 
 
 @dataclass
@@ -462,6 +464,11 @@ class FixedAmount(LegFactory):
 class EventFactory:
     """validate(spec, v, path); fixing_dates; payment_dates; evaluate(spec, p, path, legs) -> EventResult"""
     leg_dependent = False
+
+    @classmethod
+    def leg_refs(cls, spec) -> list:
+        """Ids of the legs whose results `evaluate` receives."""
+        return list(spec.legs) if cls.leg_dependent else []
 
 
 @register("event", "knock_out")
