@@ -1,0 +1,926 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Structured Derivative Pricer</title>
+<meta name="description" content="User guide for price.py: describe a structured product in YAML, validate it, see the pricing plan, and get a fair value with diagnostics.">
+<style>
+:root {
+  --bg: #fbfaf7;
+  --surface: #ffffff;
+  --surface-2: #f3f1ec;
+  --text: #1d1d1b;
+  --muted: #5f5d57;
+  --border: #e3e0d8;
+  --accent: #1f5f8b;
+  --accent-soft: #e4eef5;
+  --ok: #2f6f3e;
+  --warn: #8a5a00;
+  --warn-soft: #fbf0d9;
+  --err: #a33a2c;
+  --err-soft: #f8e5e1;
+  --code-bg: #f4f2ed;
+  --code-key: #1f5f8b;
+  --code-comment: #8a877e;
+  --code-str: #2f6f3e;
+  --radius: 8px;
+  --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+  --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  color-scheme: light;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #161615; --surface: #1e1e1c; --surface-2: #262623; --text: #ecebe6; --muted: #a8a59c;
+    --border: #34332f; --accent: #7fb6dc; --accent-soft: #1d2d38; --ok: #7cc28c; --warn: #e3b456;
+    --warn-soft: #33290f; --err: #ec8c7d; --err-soft: #3a1f1a; --code-bg: #232320; --code-key: #7fb6dc;
+    --code-comment: #85827a; --code-str: #9ccf9f; color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #161615; --surface: #1e1e1c; --surface-2: #262623; --text: #ecebe6; --muted: #a8a59c;
+  --border: #34332f; --accent: #7fb6dc; --accent-soft: #1d2d38; --ok: #7cc28c; --warn: #e3b456;
+  --warn-soft: #33290f; --err: #ec8c7d; --err-soft: #3a1f1a; --code-bg: #232320; --code-key: #7fb6dc;
+  --code-comment: #85827a; --code-str: #9ccf9f; color-scheme: dark;
+}
+
+* { box-sizing: border-box; }
+html { scroll-behavior: smooth; scroll-padding-top: 16px; }
+body { margin: 0; background: var(--bg); color: var(--text); font: 16px/1.6 var(--sans); }
+a { color: var(--accent); text-decoration: none; }
+a:hover { text-decoration: underline; }
+code, pre, kbd { font-family: var(--mono); font-size: 0.875em; }
+:not(pre) > code { background: var(--code-bg); padding: 0.1em 0.35em; border-radius: 4px; overflow-wrap: anywhere; }
+pre { background: var(--code-bg); border: 1px solid var(--border); border-radius: var(--radius); padding: 14px 16px;
+      overflow-x: auto; line-height: 1.5; margin: 12px 0 20px; }
+pre code { font-size: 13px; }
+.tok-k { color: var(--code-key); }
+.tok-c { color: var(--code-comment); font-style: italic; }
+.tok-s { color: var(--code-str); }
+
+.layout { display: grid; grid-template-columns: 250px minmax(0, 1fr); max-width: 1240px; margin: 0 auto; }
+nav.toc { position: sticky; top: 0; height: 100vh; overflow-y: auto; padding: 28px 16px 40px 24px;
+          border-right: 1px solid var(--border); font-size: 14px; }
+nav.toc .brand { font-weight: 650; font-size: 15px; margin-bottom: 4px; }
+nav.toc .sub { color: var(--muted); font-size: 12.5px; margin-bottom: 20px; }
+nav.toc ol { list-style: none; margin: 0; padding: 0; }
+nav.toc li { margin: 1px 0; }
+nav.toc a { display: block; padding: 4px 8px; border-radius: 6px; color: var(--muted); }
+nav.toc a:hover { background: var(--surface-2); color: var(--text); text-decoration: none; }
+nav.toc a.active { background: var(--accent-soft); color: var(--accent); font-weight: 600; }
+nav.toc .group { margin: 16px 0 4px 8px; font-size: 11.5px; letter-spacing: 0.06em; text-transform: uppercase; color: var(--muted); }
+.theme-btn { margin-top: 24px; font: inherit; font-size: 13px; color: var(--muted); background: none;
+             border: 1px solid var(--border); border-radius: 6px; padding: 4px 10px; cursor: pointer; }
+
+main { padding: 40px 48px 96px; max-width: 920px; }
+section { margin-bottom: 56px; }
+h1 { font-size: 34px; line-height: 1.2; margin: 0 0 12px; letter-spacing: -0.01em; }
+h2 { font-size: 24px; margin: 0 0 14px; padding-top: 8px; letter-spacing: -0.005em; }
+h3 { font-size: 18px; margin: 28px 0 8px; }
+h4 { font-size: 15px; margin: 20px 0 6px; }
+p { margin: 0 0 14px; }
+ul, ol { padding-left: 22px; margin: 0 0 14px; }
+li { margin: 3px 0; }
+.lead { font-size: 18.5px; color: var(--muted); max-width: 680px; }
+.eyebrow { color: var(--accent); font-weight: 600; font-size: 13px; letter-spacing: 0.05em; text-transform: uppercase; margin-bottom: 8px; }
+
+.table-wrap { overflow-x: auto; margin: 12px 0 20px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface); }
+table { border-collapse: collapse; width: 100%; font-size: 14.5px; }
+th, td { text-align: left; padding: 9px 12px; border-bottom: 1px solid var(--border); vertical-align: top; }
+th { background: var(--surface-2); font-weight: 600; font-size: 13px; color: var(--muted); }
+tr:last-child td { border-bottom: none; }
+td:first-child { min-width: 110px; }
+
+.cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 12px; margin: 20px 0; }
+.card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 14px 16px; }
+.card h4 { margin: 0 0 4px; font-size: 15px; }
+.card p { margin: 0; font-size: 14px; color: var(--muted); }
+
+.callout { border-left: 3px solid var(--accent); background: var(--accent-soft); padding: 12px 16px; border-radius: 0 var(--radius) var(--radius) 0; margin: 16px 0; font-size: 15px; }
+.callout.warn { border-color: var(--warn); background: var(--warn-soft); }
+.callout.err { border-color: var(--err); background: var(--err-soft); }
+.callout p:last-child, .callout ul:last-child { margin-bottom: 0; }
+
+.steps { counter-reset: step; list-style: none; padding: 0; }
+.steps > li { counter-increment: step; position: relative; padding-left: 40px; margin-bottom: 18px; }
+.steps > li::before { content: counter(step); position: absolute; left: 0; top: 0; width: 26px; height: 26px; border-radius: 50%;
+                      background: var(--accent); color: var(--bg); font-weight: 650; font-size: 13.5px; display: grid; place-items: center; }
+
+.pipeline { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin: 16px 0 8px; }
+.pipeline .node { background: var(--surface); border: 1px solid var(--border); border-radius: 6px; padding: 5px 10px; font-family: var(--mono); font-size: 13px; }
+.pipeline .node.hl { border-color: var(--accent); color: var(--accent); }
+.pipeline .arrow { color: var(--muted); }
+.caption { font-size: 13.5px; color: var(--muted); }
+
+.tabs { display: flex; flex-wrap: wrap; gap: 6px; margin: 12px 0; }
+.tabs button { font: inherit; font-size: 13px; padding: 4px 11px; border-radius: 999px; border: 1px solid var(--border);
+               background: var(--surface); color: var(--muted); cursor: pointer; }
+.tabs button[aria-pressed="true"] { background: var(--accent); border-color: var(--accent); color: var(--bg); }
+.search { width: 100%; max-width: 420px; font: inherit; font-size: 14.5px; padding: 8px 12px; border-radius: var(--radius);
+          border: 1px solid var(--border); background: var(--surface); color: var(--text); }
+.comp { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); margin: 14px 0; }
+.comp > summary { cursor: pointer; padding: 12px 16px; list-style: none; display: flex; gap: 10px; align-items: baseline; flex-wrap: wrap; }
+.comp > summary::-webkit-details-marker { display: none; }
+.comp > summary::before { content: "▸"; color: var(--muted); font-size: 12px; transition: transform .15s; }
+.comp[open] > summary::before { transform: rotate(90deg); }
+.comp .cname { font-family: var(--mono); font-weight: 650; }
+.comp .ckind { font-size: 12px; color: var(--muted); border: 1px solid var(--border); border-radius: 999px; padding: 0 8px; }
+.comp .cdesc { flex-basis: 100%; color: var(--muted); font-size: 14px; padding-left: 22px; }
+.comp .body { padding: 0 16px 14px; }
+.comp table { font-size: 13.5px; }
+.comp td:first-child code { white-space: nowrap; }
+.comp td:nth-child(2) { min-width: 170px; }
+.comp td:nth-child(2) code, .comp td:nth-child(3) code { overflow-wrap: normal; }
+.comp td:last-child { min-width: 240px; }
+.req { font-size: 11px; color: var(--err); border: 1px solid currentColor; border-radius: 4px; padding: 0 4px; margin-left: 4px; }
+.fdesc { color: var(--muted); }
+.empty { color: var(--muted); font-style: italic; }
+
+.cmd-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 12px; margin: 16px 0; }
+
+@media (max-width: 900px) {
+  .layout { display: block; }
+  nav.toc { position: static; height: auto; border-right: none; border-bottom: 1px solid var(--border); padding: 20px 16px; }
+  nav.toc ol { display: flex; flex-wrap: wrap; gap: 2px; }
+  nav.toc .group { flex-basis: 100%; }
+  main { padding: 28px 16px 64px; }
+  h1 { font-size: 28px; }
+}
+</style>
+</head>
+<body>
+<div class="layout">
+
+<nav class="toc" aria-label="Contents">
+  <div class="brand">Structured Derivative Pricer</div>
+  <div class="sub"><code>price.py</code> user guide</div>
+  <ol>
+    <li class="group">Start</li>
+    <li><a href="#overview">Overview</a></li>
+    <li><a href="#quickstart">Quick start</a></li>
+    <li><a href="#how">How it works</a></li>
+    <li class="group">Use</li>
+    <li><a href="#cli">Command line</a></li>
+    <li><a href="#input">Trade spec (YAML)</a></li>
+    <li><a href="#market">Market data &amp; fixings</a></li>
+    <li><a href="#blocks">Building blocks</a></li>
+    <li><a href="#conventions">Conventions</a></li>
+    <li><a href="#mapping">Term sheet → spec</a></li>
+    <li><a href="#result">Reading the result</a></li>
+    <li><a href="#errors">Fixing errors</a></li>
+    <li class="group">Reference</li>
+    <li><a href="#examples">Examples</a></li>
+    <li><a href="#coverage">Coverage &amp; limits</a></li>
+    <li><a href="#reference">Component reference</a></li>
+    <li><a href="#extending">Extending</a></li>
+  </ol>
+  <button class="theme-btn" id="theme-btn" type="button">Toggle theme</button>
+</nav>
+
+<main>
+
+<!-- ============================================================ OVERVIEW -->
+<section id="overview">
+  <div class="eyebrow">Product guide</div>
+  <h1>Describe the trade. Get a price.</h1>
+  <p class="lead">The structured derivative pricer values exotic and structured products from a single YAML file that
+  describes the trade. You write what the term sheet says; the engine checks it, picks a pricing method, and returns
+  a fair value with the diagnostics you need to trust it.</p>
+
+  <div class="cards">
+    <div class="card"><h4>Declarative</h4><p>Products are assembled from tested blocks: observables, legs and masks. You never write a payoff formula.</p></div>
+    <div class="card"><h4>Checked before it runs</h4><p>Every error in the file is reported at once, with its exact path and a “did you mean” hint.</p></div>
+    <div class="card"><h4>Right method, automatically</h4><p>A QuantLib closed form when one matches the trade exactly; Monte Carlo otherwise, with a cross-check.</p></div>
+    <div class="card"><h4>Reproducible</h4><p>Same file and same seed give the same price, to the last digit.</p></div>
+    <div class="card"><h4>Whole life of a trade</h4><p>One spec prices at inception and on any later date. Past fixings come from a shared fixings file.</p></div>
+    <div class="card"><h4>QuantLib conventions</h4><p>Calendars, day counts, schedules and index definitions all come from QuantLib, not hand-rolled code.</p></div>
+  </div>
+
+  <h3>What you can price</h3>
+  <p>Barrier options, EKIAKO, autocallables, callable and puttable bonds, cancellable swaps, Bermudan options,
+  equity-linked notes, fixed / floating / SOFR-compounded legs, inverse floaters, range accruals on equities, rates,
+  CMS spreads or baskets, TARNs and kick-in coupons. See <a href="#coverage">Coverage &amp; limits</a> for what is
+  not supported yet.</p>
+
+  <h3>Where things live</h3>
+  <div class="table-wrap"><table>
+    <tr><th>path</th><th>what it is</th></tr>
+    <tr><td><code>structured-derivative-pricer/scripts/price.py</code></td><td>The command-line tool this page documents.</td></tr>
+    <tr><td><code>structured-derivative-pricer/pricer/</code></td><td>The engine and its registered components.</td></tr>
+    <tr><td><code>structured-derivative-pricer/examples/</code></td><td>Ready-to-run trade specs, mock market data and a mock fixings file.</td></tr>
+    <tr><td><code>structured-derivative-pricer/reference/</code></td><td>Detailed Markdown references (components, market data, exercise).</td></tr>
+    <tr><td><code>structured-derivative-pricer/scripts/make_mock_market.py</code></td><td>Writes clearly labelled mock market data for demos and tests.</td></tr>
+  </table></div>
+</section>
+
+<!-- ============================================================ QUICK START -->
+<section id="quickstart">
+  <h2>Quick start</h2>
+  <p>Five minutes from a clean checkout to a priced autocallable note.</p>
+  <ol class="steps">
+    <li><strong>Set up once per machine.</strong> The script creates a virtual environment with QuantLib and prints the
+      Python to use.
+<pre><code class="sh">cd structured-derivative-pricer
+PY=$(scripts/setup.sh)</code></pre></li>
+    <li><strong>Validate</strong> the trade spec. It prints every error at once; exit code <code>0</code> means valid.
+<pre><code class="sh">$PY scripts/price.py validate examples/autocallable_note.yaml</code></pre></li>
+    <li><strong>Plan.</strong> See which method will be used and why, and what will be simulated.
+<pre><code class="sh">$PY scripts/price.py plan examples/autocallable_note.yaml</code></pre></li>
+    <li><strong>Price.</strong> Write the full result to a file as well as the terminal.
+<pre><code class="sh">$PY scripts/price.py price examples/autocallable_note.yaml --out result.json</code></pre></li>
+    <li><strong>Tighten the error</strong> without editing the file.
+<pre><code class="sh">$PY scripts/price.py price examples/autocallable_note.yaml --set pricing.num_paths=100000</code></pre></li>
+  </ol>
+
+  <h3>The trade you just priced</h3>
+  <p>A 2-year autocallable note on SPX, from the investor’s side, notional 1,000,000: an 8% coupon paid quarterly,
+  early redemption at par if SPX closes at or above 105% on a quarterly date, and a short down-and-in put
+  (knock-in at 70%, observed at maturity) that exposes the investor to losses below the initial level.</p>
+<pre><code class="yaml">valuation_date: 2026-09-28
+market_data: market/mock_market.yaml
+
+model: {type: black_scholes, underlying: SPX, discount_curve: USD}
+
+schedules:
+  quarterly: {type: generated, frequency: 3M, calendar: UnitedStates.NYSE, convention: ModifiedFollowing}
+  autocall_dates: {type: generated, frequency: 3M, end: 2028-06-28, calendar: UnitedStates.NYSE,
+                   convention: ModifiedFollowing}
+  final: {type: dates, dates: [maturity]}
+
+trade:
+  id: ACN-SPX-2Y
+  maturity: 2028-09-28
+  legs:
+    - {id: coupons, type: fixed_leg, rate: 0.08, notional: 1000000, schedule: quarterly,
+       day_count: Thirty360.BondBasis}
+    - {id: principal, type: fixed_amount, amount: 1000000, payment_date: maturity}
+    - id: short_dip
+      type: option_payoff
+      underlying: SPX
+      option_type: put
+      strike: 1.0                      # 100% of the initial fixing
+      notional: 1000000
+      position: short                  # the investor sold this put
+      conditions:
+        - {type: knock_in, underlying: SPX, direction: down, barrier: 0.70, observation: final}
+  termination_events:
+    - {id: autocall, type: knock_out, underlying: SPX, direction: up, barrier: 1.05,
+       observation: autocall_dates, rebate: 1000000, rebate_payment: at_hit, settle_on_event_date: true}
+
+pricing: {num_paths: 20000, seed: 7}</code></pre>
+  <p>The result, abridged (on mock market data):</p>
+<pre><code class="json">{
+  "trade_id": "ACN-SPX-2Y",
+  "method": "mc",
+  "method_reason": "no analytic pricer matches (european_vanilla: leg 'short_dip' has barrier conditions; ...)",
+  "price": 1003640.69,
+  "std_error": 773.45,
+  "confidence_interval": [1002124.76, 1005156.62],
+  "legs": {"coupons": 75030.16, "principal": 256321.94, "short_dip": -35346.35},
+  "leg_diagnostics": {"short_dip": {"conditions[0].knock_in.barrier_hit_probability": 0.10495}},
+  "events": {"autocall": {"hit_probability": 0.7241, "rebate_pv": 707634.94}},
+  "martingale_check": {"SPX": {"z_score": 0.33, "ok": true}},
+  "warnings": []
+}</code></pre>
+  <p>Read it as: fair value about 100.36% of notional (95% CI ±0.15%), a 72% chance of being autocalled and a 10.5%
+  chance the put knocks in. Most of the value arrives through the autocall rebate, which is why the principal leg
+  alone looks small.</p>
+</section>
+
+<!-- ============================================================ HOW IT WORKS -->
+<section id="how">
+  <h2>How it works</h2>
+  <p>The engine turns your spec into a graph of pre-tested components, then prices the graph.</p>
+  <div class="pipeline" role="img" aria-label="Pricing pipeline: curve, discount, underlying, model, scenario, observables, legs, masks, price; discount factors feed price directly">
+    <span class="node">curve</span><span class="arrow">→</span>
+    <span class="node">discount</span><span class="arrow">→</span>
+    <span class="node">underlying</span><span class="arrow">→</span>
+    <span class="node">model</span><span class="arrow">→</span>
+    <span class="node">scenario</span><span class="arrow">→</span>
+    <span class="node hl">observables</span><span class="arrow">→</span>
+    <span class="node hl">legs</span><span class="arrow">→</span>
+    <span class="node hl">masks</span><span class="arrow">→</span>
+    <span class="node">price</span>
+  </div>
+  <p class="caption">The scenario also produces discount factors, which go straight to pricing. The three highlighted
+  stages are the building blocks you write in the spec.</p>
+
+  <h3>Three stages, three commands</h3>
+  <div class="cmd-grid">
+    <div class="card"><h4><code>validate</code></h4><p>Parses the document, checks every component against its schema, resolves every
+      name (schedules, observables, curves, underlyings), checks model compatibility and lists missing past fixings.</p></div>
+    <div class="card"><h4><code>plan</code></h4><p>Validates, then chooses the method. Shows each closed form and why it does or does not match,
+      the component graph, fixing-date counts and estimated memory.</p></div>
+    <div class="card"><h4><code>price</code></h4><p>Validates, plans, runs. Returns the price, its error, per-leg PVs, event probabilities,
+      expected cashflows and model checks.</p></div>
+  </div>
+
+  <h3>How the method is chosen</h3>
+  <p>With <code>pricing.method: auto</code> (the default), a closed form is used only when it matches the trade
+  <em>exactly</em>. Two exist today:</p>
+  <ul>
+    <li><strong><code>european_vanilla</code></strong> – one unconditioned <code>option_payoff</code> leg (plus fixed legs) and no termination
+      events, priced with the model’s analytic European engine (Black-Scholes or Heston).</li>
+    <li><strong><code>single_barrier</code></strong> – one <code>option_payoff</code> with one <em>continuous</em> knock-in / knock-out, priced with
+      QuantLib’s analytic barrier engine (Black-Scholes only).</li>
+  </ul>
+  <p>Everything else uses Monte Carlo. When Monte Carlo runs and a closed form also applies, both are priced and the
+  gap is reported under <code>cross_check</code>. A trade that reads a past fixing is always priced by Monte Carlo,
+  because closed forms start from today’s spot.</p>
+</section>
+
+<!-- ============================================================ CLI -->
+<section id="cli">
+  <h2>Command line</h2>
+<pre><code class="sh">price.py catalog [KIND]                      # list component types and their fields (JSON)
+price.py validate INPUT [--set k=v ...]      # check the input; print every error at once
+price.py plan     INPUT [--set k=v ...]      # validate + pricing method + component graph
+price.py price    INPUT [--set k=v ...] [--out result.json]</code></pre>
+
+  <div class="table-wrap"><table>
+    <tr><th>argument</th><th>meaning</th></tr>
+    <tr><td><code>INPUT</code></td><td>A YAML or JSON file, <code>-</code> for stdin, or a literal YAML/JSON string. Relative paths inside the
+      document (<code>market_data</code>, <code>fixings</code>) resolve against the file’s folder.</td></tr>
+    <tr><td><code>KIND</code></td><td>One of <code>curve</code>, <code>vol</code>, <code>swaption_vol</code>, <code>schedule</code>, <code>model</code>,
+      <code>observable</code>, <code>leg</code>, <code>condition</code>, <code>event</code>, <code>analytic</code>. Omit for all.</td></tr>
+    <tr><td><code>--set PATH=VALUE</code></td><td>Override a field without editing the file. Repeatable. <code>PATH</code> is dot-separated
+      mapping keys (e.g. <code>pricing.num_paths</code>, <code>valuation_date</code>); <code>VALUE</code> is parsed as YAML.
+      It cannot index into lists, so a single leg’s field cannot be overridden this way.</td></tr>
+    <tr><td><code>--out FILE</code></td><td><code>price</code> only: also write the result JSON to <code>FILE</code>.</td></tr>
+  </table></div>
+
+  <h3>Exit codes and output</h3>
+  <div class="table-wrap"><table>
+    <tr><th>code</th><th>meaning</th><th>stdout</th></tr>
+    <tr><td><code>0</code></td><td>OK</td><td>The report, plan or result as JSON</td></tr>
+    <tr><td><code>2</code></td><td>Invalid input</td><td><code>{"ok": false, "errors": [...]}</code>, or the plan with its <code>validation</code> block</td></tr>
+    <tr><td><code>1</code></td><td>Runtime failure while pricing</td><td><code>{"ok": false, "stage": "run", "error": ..., "traceback": [...]}</code></td></tr>
+  </table></div>
+  <p>Output is always JSON on stdout, so it pipes cleanly into <code>jq</code> or another program.</p>
+
+  <h3>Useful recipes</h3>
+<pre><code class="sh"># reprice the same trade on a later date (seasoned trade)
+$PY scripts/price.py price trade.yaml --set valuation_date=2026-11-30 --set market_data=market_1130.yaml
+
+# force Monte Carlo on a trade that has a closed form, to see the cross-check
+$PY scripts/price.py price examples/vanilla_call.yaml --set pricing.method=mc
+
+# just the fields of one component kind
+$PY scripts/price.py catalog leg
+
+# mock market data for a demo (labelled as mock)
+$PY scripts/make_mock_market.py market.yaml --as-of 2026-09-28 --ticker SPX --spot 5000</code></pre>
+</section>
+
+<!-- ============================================================ INPUT -->
+<section id="input">
+  <h2>Trade spec (YAML)</h2>
+  <p>One document describes one trade: when to price it, against which market, under which model, and what it pays.</p>
+<pre><code class="yaml">valuation_date: 2026-09-28          # pricing date (market data as_of should match)
+market_data: market.yaml            # path relative to this file, or the market document inline
+fixings: fixings.yaml               # optional past fixings shared by trades (path or inline)
+model: {type: ..., ...}             # one model; it names the underlying(s) and discount curve
+observables: {name: {type: ...}}    # named quantities read by legs, ranges, barriers
+schedules: {name: {type: ...}}      # named date lists used by legs / conditions / events
+trade:
+  id: ...
+  currency: USD
+  effective_date: ...               # optional; default valuation_date (accrual start)
+  maturity: 2027-09-28              # ISO date or tenor from effective_date ("1Y")
+  calendar: WeekendsOnly            # adjusts dates given as tenors
+  business_day_convention: ModifiedFollowing
+  reference_levels: {SPX: 5012.3}   # optional initial fixings for relative strikes / barriers
+  history: {SPX: {2026-07-28: 5012.3}}   # optional inline past closes; win over the fixings file
+  legs: [...]
+  termination_events: [...]
+pricing: {method: auto, num_paths: 20000, seed: 42, antithetic: true}</code></pre>
+
+  <h3>Top level</h3>
+  <div class="table-wrap"><table>
+    <tr><th>field</th><th>type</th><th>default</th><th>meaning</th></tr>
+    <tr><td><code>valuation_date</code> <span class="req">required</span></td><td>date</td><td></td><td>The pricing date. Cashflows paid on or before it are dropped; fixings before it come from history.</td></tr>
+    <tr><td><code>market_data</code> <span class="req">required</span></td><td>path | mapping</td><td></td><td>A market-data file (relative to this file) or the document inline. See <a href="#market">Market data</a>.</td></tr>
+    <tr><td><code>model</code> <span class="req">required</span></td><td>mapping</td><td></td><td>Exactly one model: <code>black_scholes</code>, <code>heston</code> or <code>hull_white</code>.</td></tr>
+    <tr><td><code>trade</code> <span class="req">required</span></td><td>mapping</td><td></td><td>The trade itself, below.</td></tr>
+    <tr><td><code>schedules</code></td><td>{name: schedule}</td><td><code>{}</code></td><td>Named date lists, referred to by name from legs, conditions and events.</td></tr>
+    <tr><td><code>observables</code></td><td>{name: observable}</td><td><code>{}</code></td><td>Named rates, spreads, baskets, worst-ofs. Model underlyings are usable by name without one.</td></tr>
+    <tr><td><code>fixings</code></td><td>path | mapping</td><td>none</td><td>Past fixings shared by trades. Inline <code>history</code> wins date by date.</td></tr>
+    <tr><td><code>pricing</code></td><td>mapping</td><td>defaults below</td><td>Method and simulation settings.</td></tr>
+  </table></div>
+
+  <h3><code>trade</code></h3>
+  <div class="table-wrap"><table>
+    <tr><th>field</th><th>type</th><th>default</th><th>meaning</th></tr>
+    <tr><td><code>maturity</code> <span class="req">required</span></td><td>date | tenor</td><td></td><td>ISO date, or a tenor from <code>effective_date</code> such as <code>5Y</code>.</td></tr>
+    <tr><td><code>legs</code> <span class="req">required</span></td><td>list of legs</td><td></td><td>At least one. See <a href="#blocks">Building blocks</a>.</td></tr>
+    <tr><td><code>id</code></td><td>text</td><td><code>trade</code></td><td>Echoed in the result.</td></tr>
+    <tr><td><code>currency</code></td><td>text</td><td><code>USD</code></td><td>Reporting currency.</td></tr>
+    <tr><td><code>effective_date</code></td><td>date</td><td><code>valuation_date</code></td><td>Accrual start. Set it explicitly so the same spec prices on any later date.</td></tr>
+    <tr><td><code>calendar</code></td><td>QuantLib calendar</td><td><code>WeekendsOnly</code></td><td>Adjusts dates given as tenors.</td></tr>
+    <tr><td><code>business_day_convention</code></td><td>text</td><td><code>ModifiedFollowing</code></td><td>For dates given as tenors.</td></tr>
+    <tr><td><code>reference_levels</code></td><td>{underlying: level}</td><td>close on <code>effective_date</code>, else spot</td><td>Initial fixing for relative strikes, barriers and performances.</td></tr>
+    <tr><td><code>history</code></td><td>{underlying: {date: level}}</td><td><code>{}</code></td><td>Inline past closes. Win over the fixings file.</td></tr>
+    <tr><td><code>termination_events</code></td><td>list of events</td><td><code>[]</code></td><td>Autocall / knock-out, TARN target, Bermudan exercise.</td></tr>
+  </table></div>
+
+  <h3><code>pricing</code></h3>
+  <div class="table-wrap"><table>
+    <tr><th>field</th><th>default</th><th>meaning</th></tr>
+    <tr><td><code>method</code></td><td><code>auto</code></td><td><code>auto</code>, <code>mc</code> or <code>analytic</code>. Auto uses a closed form only when one matches exactly.</td></tr>
+    <tr><td><code>num_paths</code></td><td><code>20000</code></td><td>100 to 2,000,000. Must be even when <code>antithetic</code> is on.</td></tr>
+    <tr><td><code>seed</code></td><td><code>42</code></td><td>Same seed and same input give the same price. Keep it fixed across runs you compare.</td></tr>
+    <tr><td><code>antithetic</code></td><td><code>true</code></td><td>Antithetic paths; the error is computed from pair averages.</td></tr>
+    <tr><td><code>confidence</code></td><td><code>0.95</code></td><td>Level of the reported confidence interval.</td></tr>
+    <tr><td><code>cross_check</code></td><td><code>true</code></td><td>When MC runs and a closed form also applies, price both and report the gap.</td></tr>
+    <tr><td><code>steps_per_year</code></td><td><code>52</code></td><td>Minimum equity simulation steps per year between sparse fixing dates. Hull-White is simulated exactly.</td></tr>
+    <tr><td><code>max_memory_mb</code></td><td><code>2000</code></td><td>Abort before simulating if path storage would exceed this. Validation suggests a path count that fits.</td></tr>
+    <tr><td><code>exercise_fit_paths</code></td><td><code>num_paths</code></td><td>Bermudan only: paths of the independent simulation the exercise rule is fitted on. <code>0</code> fits in sample (faster, biased toward the exerciser).</td></tr>
+  </table></div>
+
+  <h3>Writing dates</h3>
+  <p>Anywhere a date is expected you may write an ISO date (<code>2027-09-28</code>), a symbol (<code>valuation_date</code>,
+  <code>effective_date</code>, <code>maturity</code>), or a tenor (<code>6M</code>, relative to <code>effective_date</code> or to a
+  schedule’s start). Tenor dates are business-day adjusted with the trade’s calendar.</p>
+
+  <h3>Values that change by period</h3>
+  <p>Coupon <code>notional</code>, fixed <code>rate</code>, floating <code>gearing</code> / <code>spread</code> / <code>cap</code> /
+  <code>floor</code>, and each range’s <code>lower</code> / <code>upper</code> accept three forms:</p>
+<pre><code class="yaml">rate: 0.05                                   # the same in every period
+upper: [0.045, 0.045, 0.05, 0.05]            # one per schedule period, paid periods included
+upper: {effective_date: 0.045, 4Y: 0.05}     # steps keyed by period start
+cap: {effective_date: null, 2Y: 0.06}        # null = no cap / floor / bound in those periods</code></pre>
+  <p>A step-up coupon, a range that widens each year, a cap that starts in year 3 and amortising coupon notionals are
+  all data, not new components.</p>
+</section>
+
+<!-- ============================================================ MARKET -->
+<section id="market">
+  <h2>Market data &amp; fixings</h2>
+  <p>Market data is a snapshot as of one date. Past fixings live in a separate file that only grows.</p>
+
+  <h3>Market data document</h3>
+<pre><code class="yaml">as_of: 2026-09-28                 # should equal the trade's valuation_date
+curves:
+  USD:
+    type: bootstrap               # QuantLib piecewise bootstrap with the currency's conventions
+    currency: USD                 # USD | EUR | JPY | GBP | TWD
+    deposit: [{tenor: 3M, rate: 0.0425}, {tenor: 6M, rate: 0.0415}]
+    swap:    [{tenor: 1Y, rate: 0.0395}, {tenor: 5Y, rate: 0.0360}]
+  USD-ZERO: {type: zero, tenors: [6M, 1Y, 2Y, 5Y], rates: [0.042, 0.040, 0.038, 0.037]}
+  USD-FLAT: {type: flat, rate: 0.04}
+equities:
+  SPX:
+    spot: 5000.0
+    calendar: UnitedStates.NYSE
+    dividend: {type: flat, rate: 0.015}     # continuous dividend yield (any curve type)
+    vol:
+      type: surface                         # or {type: constant, value: 0.2} / {type: term, ...}
+      strike_mode: relative                 # strikes as a fraction of spot
+      tenors:  [1M, 3M, 6M, 1Y, 2Y]
+      strikes: [0.8, 0.9, 1.0, 1.1, 1.2]
+      vols:                                 # vols[i][j] = vol at tenors[i], strikes[j]
+        - [0.26, 0.22, 0.19, 0.17, 0.16]
+        - ...
+swaption_vols:                              # for Hull-White calibration
+  USD:
+    type: matrix
+    currency: USD
+    vol_type: normal                        # normal (Bachelier) or lognormal (Black)
+    expiries: [1Y, 2Y, 5Y, 10Y]
+    tenors:   [1Y, 5Y, 10Y]
+    vols:
+      - [0.0091, 0.0084, 0.0081]
+      - ...</code></pre>
+
+  <h3>Fixings file</h3>
+  <p>Shared by every trade and appended each day. A run ignores dates on or after its valuation date, so one file
+  serves the whole life of a trade, and back-dated runs.</p>
+<pre><code class="yaml">equities:                     # closing levels by model underlying name
+  SPX: {2026-07-28: 4990.84, 2026-07-29: 4880.81, ...}
+rates:                        # fixings by name; a rate observable reads its fixings_key (default: its name)
+  USD-SOFR: {2026-09-24: 0.0431, 2026-09-25: 0.0430}</code></pre>
+  <ul>
+    <li>Equity history is closing <strong>levels</strong>, shared by every observable, barrier and range on that underlying.</li>
+    <li>An observable’s own <code>history</code> holds <strong>its own values</strong> (performances for a <code>performance</code>
+      observable, rates for a rate) and overrides the shared levels date by date.</li>
+    <li>Composites (<code>linear</code>, <code>min_of</code>, <code>max_of</code>) read the history of their leaves.</li>
+    <li>Validation lists, per input path, every past date that has no fixing.</li>
+  </ul>
+
+  <h3>Converting what users give you</h3>
+  <div class="table-wrap"><table>
+    <tr><th>you get</th><th>write</th></tr>
+    <tr><td>4.25%</td><td><code>0.0425</code> – rates and vols are always decimals</td></tr>
+    <tr><td>“3 months”, “0.25y”</td><td><code>3M</code></td></tr>
+    <tr><td>Moneyness 80, 90, 100</td><td><code>strike_mode: relative</code> with <code>0.8, 0.9, 1.0</code></td></tr>
+    <tr><td>A surface with strikes as rows</td><td>Transpose it: one row per tenor, one column per strike</td></tr>
+    <tr><td>Normal swaption vol of 85bp</td><td><code>0.0085</code>, with <code>vol_type: normal</code></td></tr>
+    <tr><td>No dividend given</td><td>Ask. Zero overprices calls and underprices puts.</td></tr>
+  </table></div>
+  <div class="callout warn"><p><strong>Never invent market data silently.</strong> Mock data from
+  <code>make_mock_market.py</code> is fine for demos and tests, but say so wherever the price is reported.</p></div>
+</section>
+
+<!-- ============================================================ BLOCKS -->
+<section id="blocks">
+  <h2>Building blocks</h2>
+  <p>Every product is a combination of three kinds of block, read through one model.</p>
+
+  <h3>Observables – what is watched</h3>
+  <div class="table-wrap"><table>
+    <tr><th>type</th><th>value on fixing date t</th><th>typical use</th></tr>
+    <tr><td><code>equity</code></td><td>level S<sub>t</sub>, or performance S<sub>t</sub> / S<sub>ref</sub></td><td>Every model underlying is also usable by name as its level.</td></tr>
+    <tr><td><code>term_rate</code></td><td>simple forward over the index tenor</td><td>EURIBOR 6M, 3M TAIFX, term SOFR</td></tr>
+    <tr><td><code>swap_rate</code></td><td>par swap rate</td><td>CMS</td></tr>
+    <tr><td><code>overnight_rate</code></td><td>1-business-day simple rate</td><td>SOFR, ESTR, TONA; the index of compounded legs</td></tr>
+    <tr><td><code>linear</code></td><td>constant + Σ weight · observable</td><td>Spreads <code>[1, -1]</code>, baskets, inverse floater <code>K − m·L</code></td></tr>
+    <tr><td><code>min_of</code> / <code>max_of</code></td><td>worst-of / best-of</td><td>Over <code>performance</code> observables</td></tr>
+  </table></div>
+  <p>Name a QuantLib index with <code>quantlib_index</code> (Sofr, Euribor, EuriborSwapIsdaFixA, …) whenever QuantLib has
+  it. Give the custom fields only for indices it lacks, such as TAIFX.</p>
+
+  <h3>Legs – what is paid</h3>
+  <div class="table-wrap"><table>
+    <tr><th>type</th><th>cashflow</th></tr>
+    <tr><td><code>fixed_leg</code></td><td>notional · rate · τ per period</td></tr>
+    <tr><td><code>floating_leg</code></td><td>notional · clip(gearing · X + spread, floor, cap) · τ. Fixed in advance, in arrears, or compounded in arrears with lockout.</td></tr>
+    <tr><td><code>range_accrual</code></td><td>notional · rate · τ · (days on which <em>every</em> range holds / observation days). Fixed or floating coupon.</td></tr>
+    <tr><td><code>option_payoff</code></td><td>notional · max(φ · (X<sub>T</sub> − K), 0) on an underlying (relative or absolute strike) or an observable</td></tr>
+    <tr><td><code>fixed_amount</code></td><td>a known amount on one date (principal, fees)</td></tr>
+  </table></div>
+  <p>A schedule lists accrual <strong>end</strong> dates; the first period starts at <code>accrual_start</code> (default
+  <code>effective_date</code>). Payment is the end date plus <code>payment_lag</code> business days. Each leg has a
+  <code>position</code>: <code>long</code> (the holder receives) or <code>short</code> (the holder pays).</p>
+
+  <h3>Masks – when it is paid</h3>
+  <div class="table-wrap"><table>
+    <tr><th>mask</th><th>where</th><th>effect</th></tr>
+    <tr><td><code>knock_in</code> condition</td><td>on a leg</td><td>Kick-in: a cashflow is paid only if the barrier was hit on or before its cut-off.</td></tr>
+    <tr><td><code>knock_out</code> condition</td><td>on a leg</td><td>A cashflow is paid only if the barrier was <em>not</em> hit on or before its cut-off.</td></tr>
+    <tr><td><code>knock_out</code> event</td><td>trade</td><td>Termination on the first hit (autocall); later cashflows cancelled, optional rebate.</td></tr>
+    <tr><td><code>target</code> event</td><td>trade</td><td>TARN: terminates when accumulated coupons of the listed legs reach the target.</td></tr>
+    <tr><td><code>bermudan_call</code> event</td><td>trade</td><td>Optional early termination by one party on a schedule: callable, puttable, cancellable, Bermudan option. Decided by Longstaff-Schwartz.</td></tr>
+  </table></div>
+  <p>The <strong>cut-off</strong> of a cashflow is an option’s expiry, a coupon period’s accrual end, or a fixed amount’s payment date.</p>
+
+  <h4>Bermudan exercise in brief</h4>
+  <ul>
+    <li><code>exerciser: issuer</code> – the payer calls or cancels when that is <em>cheaper</em> than continuing (callable bond, cancellable note).</li>
+    <li><code>exerciser: holder</code> – the holder puts when that is <em>worth more</em> (puttable bond, Bermudan option).</li>
+    <li><code>exercise_price</code> is the <strong>cash</strong> the holder receives: <code>1000000</code> for a call at par on a 1,000,000 note, <code>0</code> for a free cancellation.</li>
+    <li>Leave out the date the principal leg pays (usually maturity). One <code>bermudan_call</code> per trade.</li>
+    <li>The fitted rule is slightly sub-optimal, so the price leans against the exerciser. Compare it with
+      <code>events.&lt;id&gt;.policy.in_sample_price</code>: a gap of more than a few standard errors means the regressors miss the decision’s driver.</li>
+  </ul>
+
+  <h3>Models</h3>
+  <div class="table-wrap"><table>
+    <tr><th>type</th><th>underlyings</th><th>rates</th><th>closed forms</th></tr>
+    <tr><td><code>black_scholes</code></td><td>one, or several with explicit correlation</td><td>deterministic</td><td>European, single continuous barrier</td></tr>
+    <tr><td><code>heston</code></td><td>one; given or calibrated parameters</td><td>deterministic</td><td>European</td></tr>
+    <tr><td><code>hull_white</code></td><td>none (rates only)</td><td>stochastic 1-factor; given or calibrated to ATM swaptions</td><td>none</td></tr>
+  </table></div>
+  <ul>
+    <li>A vol <code>surface</code> under <code>black_scholes</code> gives Dupire local vol, matching all vanilla prices.</li>
+    <li>Any optionality on a rate (cap, floor, inverse floater, rate range or barrier) needs <code>hull_white</code>; the validator rejects it
+      under the equity models, whose rates are deterministic.</li>
+    <li>Hull-White is one-factor, so all rates move together. That understates the volatility of a CMS spread; say so when reporting one.</li>
+  </ul>
+</section>
+
+<!-- ============================================================ CONVENTIONS -->
+<section id="conventions">
+  <h2>Conventions</h2>
+  <p>Read these before writing a spec. Most pricing mistakes are one of them.</p>
+  <div class="table-wrap"><table>
+    <tr><th>topic</th><th>rule</th></tr>
+    <tr><td>Perspective</td><td>Priced from the holder’s view. <code>position: long</code> receives, <code>short</code> pays. An investor who sold a put inside a note is <code>short</code> that leg. A swap is one long and one short leg.</td></tr>
+    <tr><td>Relative vs absolute</td><td>On an <code>underlying</code>, strikes and barriers are relative by default: <code>1.0</code> is 100% of the initial fixing. On an <code>observable</code> they are absolute in its units; for % of initial use an <code>equity</code> observable with <code>mode: performance</code>.</td></tr>
+    <tr><td>Option payoff units</td><td>Relative strike: notional × max(φ·(S<sub>T</sub>/S<sub>ref</sub> − k), 0). Absolute strike: notional × max(φ·(X<sub>T</sub> − K), 0), where notional is the number of units.</td></tr>
+    <tr><td>Barrier touch</td><td><code>up</code>: breached when value ≥ B. <code>down</code>: breached when value ≤ B.</td></tr>
+    <tr><td>Observation</td><td>At expiry only: a <code>dates</code> schedule <code>[maturity]</code>. Daily closes: a <code>generated</code> schedule with <code>frequency: 1D</code> and the right calendar. Quarterly: <code>frequency: 3M</code>. <code>continuous</code> is for closed forms only.</td></tr>
+    <tr><td>Rebates</td><td>Cash amounts, not percentages. An autocall’s par redemption is <code>rebate: &lt;notional&gt;</code>. Do not observe the autocall on the date the principal pays, or par is paid twice.</td></tr>
+    <tr><td>Schedules</td><td>Exclude their start date unless <code>include_start: true</code>.</td></tr>
+    <tr><td>Numbers</td><td>Rates, vols and levels are decimals: 4.25% is <code>0.0425</code>. A TARN <code>target</code> is cash: write 12% of 1,000,000 as <code>120000</code>.</td></tr>
+  </table></div>
+  <div class="callout"><p><strong>Two ambiguities matter most</strong> when reading a term sheet: whether a barrier is observed
+  at expiry only or daily, and whether a level is a % of the initial fixing or an absolute price. Resolve both
+  before writing anything. Then check <code>plan</code>: a daily barrier over 1Y shows about 250 fixing dates; if it
+  shows 1, you observed it at expiry only.</p></div>
+</section>
+
+<!-- ============================================================ MAPPING -->
+<section id="mapping">
+  <h2>Term sheet → spec</h2>
+  <p>Find the term-sheet language on the left; use the component on the right.</p>
+  <div class="table-wrap"><table>
+    <tr><th>term sheet says</th><th>write</th></tr>
+    <tr><td>Put / call on X, strike K% of initial</td><td>leg <code>option_payoff</code>, <code>strike: K/100</code></td></tr>
+    <tr><td>Worst-of put on A and B</td><td><code>min_of</code> of <code>performance</code> observables; <code>option_payoff</code> on that observable, <code>strike: 1.0</code></td></tr>
+    <tr><td>Fixed coupon c% p.a., quarterly, 30/360</td><td><code>fixed_leg</code>, <code>rate: c/100</code>, quarterly schedule</td></tr>
+    <tr><td>3M EURIBOR + s, fixed 2 days before the period</td><td><code>term_rate</code>; <code>floating_leg</code> <code>in_advance</code>, <code>fixing_lag: 2</code>, <code>spread: s</code></td></tr>
+    <tr><td>SOFR compounded in arrears + s, 2-day lockout</td><td><code>overnight_rate</code>; <code>floating_leg</code> <code>compounded_in_arrears</code>, <code>lockout_days: 2</code></td></tr>
+    <tr><td>Coupon = max(K − m × LIBOR, 0)</td><td><code>floating_leg</code> <code>gearing: -m</code>, <code>spread: K</code>, <code>floor: 0</code> (needs <code>hull_white</code>)</td></tr>
+    <tr><td>Coupon = 5% − 0.8 × CMS5Y, cap 4%, floor 2%, in arrears</td><td><code>swap_rate</code>; <code>floating_leg</code> <code>gearing: -0.8</code>, <code>spread: 0.05</code>, <code>cap: 0.04</code>, <code>floor: 0.02</code>, <code>fixing: in_arrears</code></td></tr>
+    <tr><td>Year 1 fixed, then range accrual</td><td><code>range_accrual</code> with bounds <code>{effective_date: null, 1Y: ...}</code></td></tr>
+    <tr><td>Coupon steps up 3% → 4% → 5%</td><td>per-period values: a list or <code>{date: value}</code> steps</td></tr>
+    <tr><td>CMS10Y − CMS2Y</td><td>two <code>swap_rate</code> + <code>linear</code> with weights <code>[1, -1]</code></td></tr>
+    <tr><td>Accrues daily while the index is in [L, U]</td><td><code>range_accrual</code> with one <code>range</code> entry</td></tr>
+    <tr><td>Accrues only when A and B are both in range</td><td><code>range_accrual</code> with two <code>range</code> entries</td></tr>
+    <tr><td>Knock-in if the close ≤ B% on the final valuation date</td><td>condition <code>knock_in</code>, <code>down</code>, schedule <code>[maturity]</code></td></tr>
+    <tr><td>Coupons start after the index first closes ≥ B</td><td>condition <code>knock_in</code> on the coupon leg</td></tr>
+    <tr><td>Coupons stop once the index closes ≤ B</td><td>condition <code>knock_out</code> on the coupon leg</td></tr>
+    <tr><td>Autocall: redemption at par + coupon on an observation date</td><td>event <code>knock_out</code>, <code>rebate: notional</code>, <code>settle_on_event_date: true</code></td></tr>
+    <tr><td>Early redemption once total coupons reach T% (TARN)</td><td>event <code>target</code>, <code>target: T% × notional</code>, <code>rebate: notional</code></td></tr>
+    <tr><td>Callable at par by the issuer on any coupon date after year 2</td><td>event <code>bermudan_call</code>, <code>exerciser: issuer</code>, <code>exercise_price: notional</code></td></tr>
+    <tr><td>Callable at 102 in year 3, 101 in year 4, par after</td><td><code>exercise_price: {3Y: 1020000, 4Y: 1010000, 5Y: 1000000}</code></td></tr>
+    <tr><td>Puttable at par by the investor annually</td><td>event <code>bermudan_call</code>, <code>exerciser: holder</code>, <code>exercise_price: notional</code></td></tr>
+    <tr><td>Swap cancellable by the counterparty, no fee</td><td>both legs + <code>bermudan_call</code>, <code>exercise_price: 0</code>, <code>exerciser: issuer</code>, <code>regressors: [&lt;swap_rate&gt;]</code></td></tr>
+    <tr><td>Bermudan put, exercisable monthly</td><td><code>option_payoff</code> put + <code>bermudan_call</code> <code>exerciser: holder</code>, <code>exercise_price: 0</code>, <code>exercise_option</code> = the same put</td></tr>
+    <tr><td>Principal repaid at maturity</td><td>leg <code>fixed_amount</code>, <code>amount: notional</code></td></tr>
+    <tr><td>Fixing 2 business days before payment</td><td>schedule <code>offset</code> with <code>base: &lt;payment schedule&gt;</code>, <code>offset: -2D</code></td></tr>
+  </table></div>
+  <p>The full table, with more rows, is in <code>reference/components.md</code>.</p>
+</section>
+
+<!-- ============================================================ RESULT -->
+<section id="result">
+  <h2>Reading the result</h2>
+  <div class="table-wrap"><table>
+    <tr><th>field</th><th>what to check</th></tr>
+    <tr><td><code>method</code>, <code>method_reason</code></td><td>Analytic (exact) or <code>mc</code>, and why no closed form matched.</td></tr>
+    <tr><td><code>price</code>, <code>std_error</code>, <code>confidence_interval</code></td><td>If the error is large relative to the price, re-run with more paths.</td></tr>
+    <tr><td><code>legs</code></td><td>PV per leg; signs follow <code>position</code>, from the holder’s view.</td></tr>
+    <tr><td><code>leg_diagnostics</code>, <code>events</code></td><td>Knock-in, knock-out, autocall and exercise probabilities. Sanity-check them against intuition.</td></tr>
+    <tr><td><code>events.&lt;id&gt;.policy</code></td><td>Bermudan: <code>in_sample_price</code> should be within a few <code>std_error</code> of <code>price</code>.</td></tr>
+    <tr><td><code>expected_cashflows</code></td><td>Expected amount, discount factor, PV and survival probability per payment date.</td></tr>
+    <tr><td><code>cross_check</code></td><td>When MC ran and a closed form also applies, <code>agrees</code> must be true.</td></tr>
+    <tr><td><code>martingale_check</code></td><td><code>ok</code> must be true: the simulated forward matches the curve forward.</td></tr>
+    <tr><td><code>model_diagnostics</code></td><td>Local-vol flooring; for calibrated Hull-White, the fitted parameters and every swaption’s miss.</td></tr>
+    <tr><td><code>warnings</code>, <code>notes</code></td><td>Pass every warning on, e.g. vol extrapolation or local-vol flooring.</td></tr>
+  </table></div>
+  <div class="callout"><p><strong>When reporting a price</strong>, give the price with its confidence interval, the
+  method, the key probabilities, every warning, and the model assumptions: model type, and whether the data is mock.
+  For path-dependent products, pricing under both <code>black_scholes</code> (local vol) and <code>heston</code> shows model risk.</p></div>
+</section>
+
+<!-- ============================================================ ERRORS -->
+<section id="errors">
+  <h2>Fixing errors</h2>
+  <p><code>validate</code> reports every problem in one pass. Each error names the exact input path and, where it can,
+  suggests the fix. Here is the autocallable note with three typos:</p>
+<pre><code class="json">{
+  "ok": false,
+  "errors": [
+    {"path": "trade.legs[2].conditions[0].observation",
+     "message": "schedule 'finale' is not defined. Did you mean 'final'?",
+     "hint": "defined schedules: ['autocall_dates', 'final', 'quarterly']; or use 'continuous' (analytic pricers only)"},
+    {"path": "trade.legs[0].rate", "message": "Field required"},
+    {"path": "trade.legs[0].rat",  "message": "unknown field (check spelling; see `price.py catalog`)"},
+    {"path": "trade.legs[2].conditions[0].direction", "message": "Input should be 'up' or 'down'"}
+  ],
+  "warnings": []
+}</code></pre>
+  <p>Fix them all, then validate again. Common messages and what they mean:</p>
+  <div class="table-wrap"><table>
+    <tr><th>message</th><th>what to do</th></tr>
+    <tr><td>“'SPX' needs N past closing level(s)”</td><td>The trade reads dates before the valuation date. Add the closes to the fixings file; never invent them.</td></tr>
+    <tr><td>Optionality on a deterministic rate</td><td>A cap, floor, range or barrier on a rate needs <code>model: hull_white</code>. Do not drop the feature to get past it.</td></tr>
+    <tr><td>Autocall observed on the principal date</td><td>Par would be paid twice. End the autocall schedule before maturity.</td></tr>
+    <tr><td>Flat extrapolation used</td><td>A curve or surface does not reach the trade maturity. Get longer quotes, or report the warning.</td></tr>
+    <tr><td><code>num_paths must be even</code></td><td>Antithetic sampling pairs paths.</td></tr>
+  </table></div>
+</section>
+
+<!-- ============================================================ EXAMPLES -->
+<section id="examples">
+  <h2>Examples</h2>
+  <p>All in <code>structured-derivative-pricer/examples/</code>, priced against the mock market in <code>examples/market/</code>. Start
+  a new spec from the closest one.</p>
+  <div class="table-wrap"><table>
+    <tr><th>file</th><th>product</th><th>blocks</th></tr>
+    <tr><td><code>vanilla_call.yaml</code></td><td>European call</td><td><code>option_payoff</code>, closed form</td></tr>
+    <tr><td><code>ekiako_put.yaml</code></td><td>European knock-in, American knock-out put</td><td><code>knock_in</code> condition + daily <code>knock_out</code> event</td></tr>
+    <tr><td><code>ekiako_put_heston.yaml</code></td><td>Same, under Heston</td><td>model risk comparison</td></tr>
+    <tr><td><code>up_and_out_call_continuous.yaml</code></td><td>Continuous barrier</td><td>closed form</td></tr>
+    <tr><td><code>autocallable_note.yaml</code></td><td>Autocallable note</td><td>fixed leg + principal + short KI put + autocall</td></tr>
+    <tr><td><code>sofr_frn_lockout.yaml</code></td><td>SOFR FRN</td><td>compounded in arrears + lockout</td></tr>
+    <tr><td><code>inverse_floater_tarn.yaml</code></td><td>Inverse floater TARN</td><td><code>floating_leg</code> (gearing −2, floor 0) + <code>target</code>, Hull-White</td></tr>
+    <tr><td><code>cms_spread_range_accrual.yaml</code></td><td>CMS spread range accrual</td><td>two swap rates + <code>linear</code> + daily range, Hull-White</td></tr>
+    <tr><td><code>dual_equity_range_accrual.yaml</code></td><td>Dual-index range accrual with kick-in</td><td>2-asset local vol, two ranges, <code>knock_in</code></td></tr>
+    <tr><td><code>hybrid_fixed_then_range_accrual.yaml</code></td><td>10Y: fixed year 1, then rate range accrual</td><td>one <code>range_accrual</code>, per-period bounds</td></tr>
+    <tr><td><code>cms_inverse_floater_in_arrears.yaml</code></td><td>10Y: fixed year 1, then 5% − 0.8×CMS5Y collared</td><td>split schedules, Hull-White</td></tr>
+    <tr><td><code>callable_fixed_rate_bond.yaml</code></td><td>10NC2 callable bond</td><td><code>bermudan_call</code> (issuer), Hull-White</td></tr>
+    <tr><td><code>callable_fixed_rate_bond_calibrated.yaml</code></td><td>Same bond</td><td>Hull-White calibrated to coterminal swaptions</td></tr>
+    <tr><td><code>cancellable_swap.yaml</code></td><td>5Y receive-fixed swap, cancellable annually</td><td><code>bermudan_call</code> (issuer, price 0, swap-rate regressor)</td></tr>
+    <tr><td><code>bermudan_put.yaml</code></td><td>1Y Bermudan put, monthly exercise</td><td><code>bermudan_call</code> (holder, <code>exercise_option</code>)</td></tr>
+    <tr><td><code>seasoned_range_accrual_note.yaml</code></td><td>Range accrual valued mid-period</td><td>shared fixings file; reprice with <code>--set valuation_date=...</code></td></tr>
+  </table></div>
+</section>
+
+<!-- ============================================================ COVERAGE -->
+<section id="coverage">
+  <h2>Coverage &amp; limits</h2>
+  <p>If a feature cannot be expressed with the catalog, the right answer is to say so, naming the missing component.
+  Never approximate it away.</p>
+  <div class="callout err">
+    <p><strong>Not supported yet</strong></p>
+    <ul>
+      <li>More than one Bermudan exercise right per trade (e.g. both an issuer call and a holder put).</li>
+      <li>American (continuous) exercise. A daily <code>bermudan_call</code> schedule approximates it, if the user agrees.</li>
+      <li>Equity plus stochastic-rate hybrids.</li>
+      <li>FX, quanto and multi-currency trades.</li>
+      <li>Snowball / memory coupons.</li>
+      <li>Digital coupons other than range accrual.</li>
+      <li>Past monitoring of a <code>continuous</code> barrier: closed forms only look forward from today.</li>
+      <li>Custom payoff code (planned as an extension point).</li>
+    </ul>
+  </div>
+  <h3>Seasoned trades</h3>
+  <p>Write the spec once, with an explicit <code>effective_date</code>. It then prices on any date of its life by changing
+  only <code>valuation_date</code> and the market data, while the fixings file keeps growing. Every payoff reads past
+  dates from history and later dates from the simulation; a fixing <em>on</em> the valuation date is simulated from
+  today’s spot. A few things are not fixings and behave specifically:</p>
+  <div class="table-wrap"><table>
+    <tr><th>feature</th><th>before the valuation date</th></tr>
+    <tr><td>Cashflows</td><td>Paid on or before the valuation date: dropped. The current period keeps its full accrual.</td></tr>
+    <tr><td><code>knock_out</code> event</td><td>A past hit is an error: the trade has already terminated.</td></tr>
+    <tr><td><code>target</code> (TARN)</td><td>Paid coupons are recomputed from past fixings; give <code>accumulated: &lt;cash&gt;</code> if those are unavailable.</td></tr>
+    <tr><td><code>bermudan_call</code></td><td>Only exercise dates after the valuation date count.</td></tr>
+    <tr><td><code>observation: continuous</code></td><td>Monitored forward from today only (warning): confirm the barrier was not hit.</td></tr>
+  </table></div>
+</section>
+
+<!-- ============================================================ REFERENCE -->
+<section id="reference">
+  <h2>Component reference</h2>
+  <p>Every component type with its fields, defaults and allowed values. This section is generated from the code, the
+  same data as <code>price.py catalog</code>; refresh it with <code>$PY docs/build_catalog.py</code> after changing a component.</p>
+  <input class="search" id="ref-search" type="search" placeholder="Filter: e.g. barrier, lockout, notional" aria-label="Filter components">
+  <div class="tabs" id="ref-tabs" role="group" aria-label="Component kind"></div>
+  <div id="ref-list"><p class="empty">The component reference needs JavaScript.</p></div>
+</section>
+
+<!-- ============================================================ EXTENDING -->
+<section id="extending">
+  <h2>Extending</h2>
+  <p>For developers adding a component, not for pricing a trade.</p>
+  <ul>
+    <li>Each component is a class registered with <code>@register(kind, type)</code> and a pydantic <code>Spec</code> in
+      <code>pricer/registry.py</code>. A new observable, leg, condition, event, model or analytic pricer is one class.</li>
+    <li>Legs, conditions and events read the market only through observables (<code>p.obs(name, dates)</code>) and declare
+      their dates through <code>obs.requirements</code>. That is what makes past fixings work for any payoff; a test enforces it.</li>
+    <li>Validation, the catalog, the plan graph and this page’s reference pick a new component up automatically.</li>
+    <li>Add a regression test in <code>tests/</code> against a closed form or a limiting case, and run
+      <code>$PY -m pytest structured-derivative-pricer/tests -q</code>.</li>
+  </ul>
+</section>
+
+</main>
+</div>
+
+<!-- CATALOG:BEGIN -->
+<script id="catalog-data" type="application/json">{"curve":{"bootstrap":{"description":"Bootstrapped from deposit / par swap quotes with the currency's conventions (annual 30/360 fixed vs 6M floating swaps). Curve day count Actual365Fixed.","fields":{"currency":{"default":"USD","enum":["USD","EUR","JPY","GBP","TWD"],"title":"Currency","type":"string"},"deposit":{"items":{"$ref":"#/$defs/_Quote"},"title":"Deposit","type":"array"},"swap":{"items":{"$ref":"#/$defs/_Quote"},"title":"Swap","type":"array"},"method":{"default":"linearZero","enum":["logLinearDiscount","logCubicDiscount","linearZero","cubicZero","linearForward","splineCubicDiscount"],"title":"Method","type":"string"}},"required":[],"definitions":{"_Quote":{"additionalProperties":false,"properties":{"tenor":{"title":"Tenor","type":"string"},"rate":{"title":"Rate","type":"number"}},"required":["tenor","rate"],"title":"_Quote","type":"object"}}},"flat":{"description":"Flat continuously-compounded zero rate.","fields":{"rate":{"title":"Rate","type":"number"},"day_count":{"default":"Actual365Fixed","title":"Day Count","type":"string"}},"required":["rate"]},"zero":{"description":"Continuously-compounded zero rates at tenors, linear interpolation, flat extrapolation.","fields":{"tenors":{"items":{"type":"string"},"minItems":1,"title":"Tenors","type":"array"},"rates":{"items":{"type":"number"},"minItems":1,"title":"Rates","type":"array"},"day_count":{"default":"Actual365Fixed","title":"Day Count","type":"string"}},"required":["tenors","rates"]}},"vol":{"constant":{"description":"Single flat Black volatility.","fields":{"value":{"exclusiveMaximum":5,"exclusiveMinimum":0,"title":"Value","type":"number"}},"required":["value"]},"surface":{"description":"Black vol surface: vols[i][j] is the vol for tenors[i] and strikes[j]. strike_mode 'relative' means strikes are fractions of spot (1.0 = ATM).","fields":{"tenors":{"items":{"type":"string"},"minItems":1,"title":"Tenors","type":"array"},"strikes":{"items":{"type":"number"},"minItems":2,"title":"Strikes","type":"array"},"vols":{"items":{"items":{"type":"number"},"type":"array"},"title":"Vols","type":"array"},"strike_mode":{"default":"relative","enum":["absolute","relative"],"title":"Strike Mode","type":"string"},"interpolation":{"default":"bicubic","description":"bicubic gives smoother Dupire local vol","enum":["bicubic","bilinear"],"title":"Interpolation","type":"string"}},"required":["tenors","strikes","vols"]},"term":{"description":"ATM Black vol term structure (no smile).","fields":{"tenors":{"items":{"type":"string"},"minItems":1,"title":"Tenors","type":"array"},"vols":{"items":{"type":"number"},"minItems":1,"title":"Vols","type":"array"}},"required":["tenors","vols"]}},"swaption_vol":{"matrix":{"description":"ATM swaption vol matrix: vols[i][j] is the vol for option expiries[i] into a swap of tenors[j]. The underlying swaps follow the currency's bootstrap conventions (annual 30/360 fixed vs the 6M index). Interpolated bilinearly (QuantLib SwaptionVolatilityMatrix), flat extrapolation.","fields":{"currency":{"default":"USD","enum":["USD","EUR","JPY","GBP","TWD"],"title":"Currency","type":"string"},"vol_type":{"default":"normal","description":"normal (Bachelier, absolute: 0.008 = 80bp) or (shifted) lognormal Black vols","enum":["normal","lognormal"],"title":"Vol Type","type":"string"},"shift":{"default":0.0,"description":"lognormal shift (e.g. 0.01); must be 0 for normal vols","minimum":0,"title":"Shift","type":"number"},"expiries":{"items":{"type":"string"},"minItems":1,"title":"Expiries","type":"array"},"tenors":{"items":{"type":"string"},"minItems":1,"title":"Tenors","type":"array"},"vols":{"items":{"items":{"type":"number"},"type":"array"},"title":"Vols","type":"array"}},"required":["expiries","tenors","vols"]}},"schedule":{"dates":{"description":"Explicit list of dates (optionally business-day adjusted).","fields":{"dates":{"items":{"anyOf":[{"format":"date","type":"string"},{"type":"string"}]},"minItems":1,"title":"Dates","type":"array"},"calendar":{"anyOf":[{"type":"string"},{"type":"null"}],"default":null,"title":"Calendar"},"convention":{"default":"Following","title":"Convention","type":"string"}},"required":["dates"]},"generated":{"description":"Regular schedule from start to end. frequency '1D' means every business day of the calendar (daily observation / American-style monitoring). The start date is excluded unless include_start is true.","fields":{"start":{"anyOf":[{"format":"date","type":"string"},{"type":"string"}],"default":"effective_date","title":"Start"},"end":{"anyOf":[{"format":"date","type":"string"},{"type":"string"}],"default":"maturity","title":"End"},"frequency":{"description":"tenor such as 1D, 1W, 1M, 3M, 6M, 1Y","title":"Frequency","type":"string"},"calendar":{"default":"WeekendsOnly","title":"Calendar","type":"string"},"convention":{"default":"ModifiedFollowing","title":"Convention","type":"string"},"rule":{"default":"Backward","enum":["Forward","Backward"],"title":"Rule","type":"string"},"end_of_month":{"default":false,"title":"End Of Month","type":"boolean"},"include_start":{"default":false,"title":"Include Start","type":"boolean"}},"required":["frequency"]},"offset":{"description":"Shift every date of another schedule, e.g. fixing dates 2 business days before payment dates: {type: offset, base: payment, offset: -2D, calendar: ...}.","fields":{"base":{"description":"name of another schedule","title":"Base","type":"string"},"offset":{"description":"signed tenor, e.g. -2D, 1W","title":"Offset","type":"string"},"business_days":{"default":true,"description":"count D offsets in business days of `calendar`","title":"Business Days","type":"boolean"},"calendar":{"default":"WeekendsOnly","title":"Calendar","type":"string"},"convention":{"default":"Following","title":"Convention","type":"string"}},"required":["base","offset"]}},"model":{"black_scholes":{"description":"Black-Scholes-Merton on one or several equity underlyings, deterministic rates. With a vol surface each underlying follows QuantLib's Dupire local vol; with constant/term vol, plain GBM. Several underlyings need an explicit `correlation` matrix. Rate observables are deterministic forwards. Analytic engines: European vanilla, single barrier (continuous).","fields":{"underlying":{"anyOf":[{"type":"string"},{"type":"null"}],"default":null,"description":"the single underlying (or use `underlyings`)","title":"Underlying"},"underlyings":{"anyOf":[{"items":{"type":"string"},"type":"array"},{"type":"null"}],"default":null,"description":"several underlyings, simulated jointly","title":"Underlyings"},"correlation":{"anyOf":[{"items":{"items":{"type":"number"},"type":"array"},"type":"array"},{"type":"null"}],"default":null,"description":"correlation of the Brownian drivers, rows/columns in `underlyings` order","title":"Correlation"},"discount_curve":{"title":"Discount Curve","type":"string"}},"required":["discount_curve"]},"heston":{"description":"Single-asset Heston stochastic vol with deterministic rates. Either give `params`, or omit them to calibrate (Levenberg-Marquardt on QuantLib HestonModelHelpers) to every quote of the underlying's vol surface. Analytic engine: European vanilla.","fields":{"underlying":{"title":"Underlying","type":"string"},"discount_curve":{"title":"Discount Curve","type":"string"},"params":{"anyOf":[{"$ref":"#/$defs/_HestonParams"},{"type":"null"}],"default":null,"description":"omit to calibrate to the vol surface"}},"required":["underlying","discount_curve"],"definitions":{"_HestonParams":{"additionalProperties":false,"properties":{"v0":{"exclusiveMinimum":0,"title":"V0","type":"number"},"kappa":{"exclusiveMinimum":0,"title":"Kappa","type":"number"},"theta":{"exclusiveMinimum":0,"title":"Theta","type":"number"},"sigma":{"exclusiveMinimum":0,"title":"Sigma","type":"number"},"rho":{"maximum":1,"minimum":-1,"title":"Rho","type":"number"}},"required":["v0","kappa","theta","sigma","rho"],"title":"_HestonParams","type":"object"}}},"hull_white":{"description":"One-factor Hull-White short rate dr = (theta(t) - a r) dt + sigma dW, fitted to the discount curve. Rates only (no equity underlyings): every rate observable is stochastic and cashflows are discounted path-wise. Other curves keep a deterministic basis to the discount curve. Exact simulation on fixing/payment dates. Give mean_reversion and volatility, or `calibration` to fit volatility (and optionally mean_reversion) to ATM swaptions from a market swaption vol matrix (QuantLib HullWhite + Jamshidian engine, Levenberg-Marquardt).","fields":{"discount_curve":{"title":"Discount Curve","type":"string"},"mean_reversion":{"anyOf":[{"maximum":5.0,"minimum":0.0001,"type":"number"},{"type":"null"}],"default":null,"description":"a, per year (e.g. 0.03); held fixed during calibration unless calibrate_mean_reversion (then the starting guess, default 0.03)","title":"Mean Reversion"},"volatility":{"anyOf":[{"exclusiveMaximum":0.2,"exclusiveMinimum":0,"type":"number"},{"type":"null"}],"default":null,"description":"sigma, absolute short-rate vol (0.01 = 100bp/yr); with calibration only the starting guess","title":"Volatility"},"calibration":{"anyOf":[{"$ref":"#/$defs/_HullWhiteCalibration"},{"type":"null"}],"default":null,"description":"fit to swaptions instead of giving the parameters"}},"required":["discount_curve"],"definitions":{"_HullWhiteCalibration":{"additionalProperties":false,"properties":{"swaption_vol":{"description":"name of a market_data.swaption_vols matrix","title":"Swaption Vol","type":"string"},"instruments":{"anyOf":[{"enum":["coterminal","all"],"type":"string"},{"items":{"$ref":"#/$defs/_SwaptionPoint"},"type":"array"}],"default":"coterminal","description":"coterminal: annual expiries into the swap ending at the trade maturity; all: every quoted matrix point; or an explicit list of {expiry, tenor}","title":"Instruments"},"calibrate_mean_reversion":{"default":false,"description":"also fit mean_reversion (else it is held at the given value and only volatility is fit)","title":"Calibrate Mean Reversion","type":"boolean"},"error":{"default":"relative_price","description":"QuantLib calibration error per swaption","enum":["relative_price","price","implied_vol"],"title":"Error","type":"string"}},"required":["swaption_vol"],"title":"_HullWhiteCalibration","type":"object"},"_SwaptionPoint":{"additionalProperties":false,"properties":{"expiry":{"description":"option expiry tenor, e.g. 2Y","title":"Expiry","type":"string"},"tenor":{"description":"underlying swap tenor, e.g. 8Y","title":"Tenor","type":"string"}},"required":["expiry","tenor"],"title":"_SwaptionPoint","type":"object"}}}},"observable":{"equity":{"description":"A simulated underlying: `level` is the price S_t; `performance` is S_t / S_ref (S_ref = trade.reference_levels, default today's spot). Every model underlying is also usable by name as its level without declaring it. Past closing levels come from `history` or, shared by every observable of the underlying, from trade.history.","fields":{"history":{"additionalProperties":{"type":"number"},"description":"past values of THIS observable {YYYY-MM-DD: x}, in its own units: a level, or S/S_ref in performance mode. Usually closing levels are given once per underlying (fixings file / trade.history) instead","propertyNames":{"format":"date"},"title":"History","type":"object"},"underlying":{"title":"Underlying","type":"string"},"mode":{"default":"level","enum":["level","performance"],"title":"Mode","type":"string"}},"required":["underlying"]},"linear":{"description":"constant + sum(weight_i * observable_i). Spread: weights [1, -1]; basket: positive weights; inverse floater rate: constant K, weight -m on the index.","fields":{"terms":{"items":{"$ref":"#/$defs/_Term"},"minItems":1,"title":"Terms","type":"array"},"constant":{"default":0.0,"title":"Constant","type":"number"}},"required":["terms"],"definitions":{"_Term":{"additionalProperties":false,"properties":{"observable":{"title":"Observable","type":"string"},"weight":{"title":"Weight","type":"number"}},"required":["observable","weight"],"title":"_Term","type":"object"}}},"max_of":{"description":"Largest of several observables on each date (best-of).","fields":{"observables":{"items":{"type":"string"},"minItems":2,"title":"Observables","type":"array"}},"required":["observables"]},"min_of":{"description":"Smallest of several observables on each date (worst-of; use performance observables).","fields":{"observables":{"items":{"type":"string"},"minItems":2,"title":"Observables","type":"array"}},"required":["observables"]},"overnight_rate":{"description":"Overnight rate fixed on date t, applying from t to the next business day, as QuantLib's OvernightIndex forecasts it. The index of compounded_in_arrears floating legs. Conventions from `quantlib_index` (Sofr, Estr, Sonia, Tonar, ...) or the custom fields.","fields":{"history":{"additionalProperties":{"type":"number"},"description":"past fixings {YYYY-MM-DD: value} for fixing dates before the valuation date","propertyNames":{"format":"date"},"title":"History","type":"object"},"curve":{"description":"market curve the index is projected from","title":"Curve","type":"string"},"fixings_key":{"anyOf":[{"type":"string"},{"type":"null"}],"default":null,"description":"entry of the fixings file's `rates` this index reads (default: the observable's name)","title":"Fixings Key"},"quantlib_index":{"anyOf":[{"type":"string"},{"type":"null"}],"default":null,"description":"use a QuantLib index's conventions instead of the custom fields below","title":"Quantlib Index"},"calendar":{"default":"WeekendsOnly","title":"Calendar","type":"string"},"day_count":{"default":"Actual360","title":"Day Count","type":"string"}},"required":["curve"]},"swap_rate":{"description":"Par swap rate (CMS) fixed on date t, as QuantLib's SwapIndex defines its underlying swap (value date, maturity, fixed-leg tenor / convention / day count, backward schedule): (P(t,T0) - P(t,Tn)) / sum tau_i P(t,Ti) on one curve. Conventions from `quantlib_index` (EuriborSwapIsdaFixA, UsdLiborSwapIsdaFixAm, ...) or the custom fields.","fields":{"history":{"additionalProperties":{"type":"number"},"description":"past fixings {YYYY-MM-DD: value} for fixing dates before the valuation date","propertyNames":{"format":"date"},"title":"History","type":"object"},"curve":{"description":"market curve the index is projected from","title":"Curve","type":"string"},"fixings_key":{"anyOf":[{"type":"string"},{"type":"null"}],"default":null,"description":"entry of the fixings file's `rates` this index reads (default: the observable's name)","title":"Fixings Key"},"quantlib_index":{"anyOf":[{"type":"string"},{"type":"null"}],"default":null,"description":"use a QuantLib index's conventions instead of the custom fields below","title":"Quantlib Index"},"tenor":{"description":"swap tenor, e.g. 10Y","title":"Tenor","type":"string"},"calendar":{"default":"WeekendsOnly","title":"Calendar","type":"string"},"fixed_frequency":{"default":"1Y","title":"Fixed Frequency","type":"string"},"fixed_day_count":{"default":"Thirty360.BondBasis","title":"Fixed Day Count","type":"string"},"spot_lag":{"default":2,"minimum":0,"title":"Spot Lag","type":"integer"},"convention":{"default":"ModifiedFollowing","title":"Convention","type":"string"}},"required":["curve","tenor"]},"term_rate":{"description":"IBOR-style term rate fixed on date t, as QuantLib's IborIndex forecasts it: (P(t,start)/P(t,end) - 1) / yearfraction with start = index.valueDate(t) and end = index.maturityDate(start), on the model's curve as seen at t. Conventions from `quantlib_index` (Euribor, USDLibor, Tibor, ...) or the custom fields.","fields":{"history":{"additionalProperties":{"type":"number"},"description":"past fixings {YYYY-MM-DD: value} for fixing dates before the valuation date","propertyNames":{"format":"date"},"title":"History","type":"object"},"curve":{"description":"market curve the index is projected from","title":"Curve","type":"string"},"fixings_key":{"anyOf":[{"type":"string"},{"type":"null"}],"default":null,"description":"entry of the fixings file's `rates` this index reads (default: the observable's name)","title":"Fixings Key"},"quantlib_index":{"anyOf":[{"type":"string"},{"type":"null"}],"default":null,"description":"use a QuantLib index's conventions instead of the custom fields below","title":"Quantlib Index"},"tenor":{"description":"index tenor, e.g. 3M","title":"Tenor","type":"string"},"calendar":{"default":"WeekendsOnly","title":"Calendar","type":"string"},"day_count":{"default":"Actual360","title":"Day Count","type":"string"},"spot_lag":{"default":2,"description":"business days from fixing to the index start","minimum":0,"title":"Spot Lag","type":"integer"},"convention":{"default":"ModifiedFollowing","title":"Convention","type":"string"},"end_of_month":{"default":false,"title":"End Of Month","type":"boolean"}},"required":["curve","tenor"]}},"leg":{"fixed_amount":{"description":"A single known cash amount (e.g. principal redemption) paid on payment_date, optionally gated by conditions (cut-off = payment date), e.g. a bonus paid only if a barrier was touched.","fields":{"id":{"title":"Id","type":"string"},"amount":{"title":"Amount","type":"number"},"payment_date":{"anyOf":[{"format":"date","type":"string"},{"type":"string"}],"default":"maturity","title":"Payment Date"},"position":{"default":"long","enum":["long","short"],"title":"Position","type":"string"},"conditions":{"items":{"additionalProperties":true,"type":"object"},"title":"Conditions","type":"array"}},"required":["id","amount"]},"fixed_leg":{"description":"Fixed-rate coupons: notional * rate * yearfraction(start, end) per accrual period of `schedule`, paid payment_lag business days after each end. Optional leg conditions.","fields":{"id":{"title":"Id","type":"string"},"notional":{"anyOf":[{"type":"number"},{"items":{"anyOf":[{"type":"number"},{"type":"null"}]},"type":"array"},{"additionalProperties":{"anyOf":[{"type":"number"},{"type":"null"}]},"type":"object"}],"description":"> 0; a number, a list with one value per schedule period (paid ones included), or {date: value} steps keyed by period start (e.g. {effective_date: 0.03, 1Y: 0.04}); a varying notional amortises the coupons only","title":"Notional"},"schedule":{"description":"schedule of accrual END dates (the first period starts at accrual_start)","title":"Schedule","type":"string"},"accrual_start":{"anyOf":[{"format":"date","type":"string"},{"type":"string"}],"default":"effective_date","description":"start of the first accrual period","title":"Accrual Start"},"payment_lag":{"default":0,"description":"business days from accrual end to payment","minimum":0,"title":"Payment Lag","type":"integer"},"payment_calendar":{"default":"WeekendsOnly","title":"Payment Calendar","type":"string"},"position":{"default":"long","enum":["long","short"],"title":"Position","type":"string"},"conditions":{"description":"knock_in (kick-in) / knock_out conditions; a period's coupon counts barrier hits on or before its accrual end","items":{"additionalProperties":true,"type":"object"},"title":"Conditions","type":"array"},"rate":{"anyOf":[{"type":"number"},{"items":{"anyOf":[{"type":"number"},{"type":"null"}]},"type":"array"},{"additionalProperties":{"anyOf":[{"type":"number"},{"type":"null"}]},"type":"object"}],"description":"coupon rate; a number, a list with one value per schedule period (paid ones included), or {date: value} steps keyed by period start (e.g. {effective_date: 0.03, 1Y: 0.04}) (a step-up / step-down coupon)","title":"Rate"},"day_count":{"default":"Thirty360.BondBasis","title":"Day Count","type":"string"}},"required":["id","notional","schedule","rate"]},"floating_leg":{"description":"Floating coupons: notional * clip(gearing * X + spread, floor, cap) * yearfraction per period. X = `index` observable fixed in_advance (IBOR), in_arrears, or compounded_in_arrears over an overnight_rate index with optional lockout_days. An inverse floater is gearing -m, spread K, floor 0. Any observable can be the index (a CMS rate, a spread, an equity performance).","fields":{"fixing":{"default":"in_advance","enum":["in_advance","in_arrears","compounded_in_arrears"],"title":"Fixing","type":"string"},"fixing_lag":{"anyOf":[{"minimum":0,"type":"integer"},{"type":"null"}],"default":null,"description":"business days before accrual start (in_advance) or end (in_arrears); default: the index's fixing days. Unused by compounded_in_arrears","title":"Fixing Lag"},"fixing_calendar":{"anyOf":[{"type":"string"},{"type":"null"}],"default":null,"description":"default: the index's fixing calendar","title":"Fixing Calendar"},"lockout_days":{"default":0,"description":"compounded_in_arrears only: the last n daily rates of a period equal the rate of the business day before them","minimum":0,"title":"Lockout Days","type":"integer"},"gearing":{"anyOf":[{"type":"number"},{"items":{"anyOf":[{"type":"number"},{"type":"null"}]},"type":"array"},{"additionalProperties":{"anyOf":[{"type":"number"},{"type":"null"}]},"type":"object"}],"default":1.0,"description":"multiplier on the index; a number, a list with one value per schedule period (paid ones included), or {date: value} steps keyed by period start (e.g. {effective_date: 0.03, 1Y: 0.04})","title":"Gearing"},"spread":{"anyOf":[{"type":"number"},{"items":{"anyOf":[{"type":"number"},{"type":"null"}]},"type":"array"},{"additionalProperties":{"anyOf":[{"type":"number"},{"type":"null"}]},"type":"object"}],"default":0.0,"description":"added after gearing; a number, a list with one value per schedule period (paid ones included), or {date: value} steps keyed by period start (e.g. {effective_date: 0.03, 1Y: 0.04})","title":"Spread"},"cap":{"anyOf":[{"type":"number"},{"items":{"anyOf":[{"type":"number"},{"type":"null"}]},"type":"array"},{"additionalProperties":{"anyOf":[{"type":"number"},{"type":"null"}]},"type":"object"},{"type":"null"}],"default":null,"description":"cap on the period rate (after gearing and spread); a number, a list with one value per schedule period (paid ones included), or {date: value} steps keyed by period start (e.g. {effective_date: 0.03, 1Y: 0.04})","title":"Cap"},"floor":{"anyOf":[{"type":"number"},{"items":{"anyOf":[{"type":"number"},{"type":"null"}]},"type":"array"},{"additionalProperties":{"anyOf":[{"type":"number"},{"type":"null"}]},"type":"object"},{"type":"null"}],"default":null,"description":"floor on the period rate (after gearing and spread); a number, a list with one value per schedule period (paid ones included), or {date: value} steps keyed by period start (e.g. {effective_date: 0.03, 1Y: 0.04})","title":"Floor"},"id":{"title":"Id","type":"string"},"notional":{"anyOf":[{"type":"number"},{"items":{"anyOf":[{"type":"number"},{"type":"null"}]},"type":"array"},{"additionalProperties":{"anyOf":[{"type":"number"},{"type":"null"}]},"type":"object"}],"description":"> 0; a number, a list with one value per schedule period (paid ones included), or {date: value} steps keyed by period start (e.g. {effective_date: 0.03, 1Y: 0.04}); a varying notional amortises the coupons only","title":"Notional"},"schedule":{"description":"schedule of accrual END dates (the first period starts at accrual_start)","title":"Schedule","type":"string"},"accrual_start":{"anyOf":[{"format":"date","type":"string"},{"type":"string"}],"default":"effective_date","description":"start of the first accrual period","title":"Accrual Start"},"payment_lag":{"default":0,"description":"business days from accrual end to payment","minimum":0,"title":"Payment Lag","type":"integer"},"payment_calendar":{"default":"WeekendsOnly","title":"Payment Calendar","type":"string"},"position":{"default":"long","enum":["long","short"],"title":"Position","type":"string"},"conditions":{"description":"knock_in (kick-in) / knock_out conditions; a period's coupon counts barrier hits on or before its accrual end","items":{"additionalProperties":true,"type":"object"},"title":"Conditions","type":"array"},"index":{"description":"observable name","title":"Index","type":"string"},"day_count":{"default":"Actual360","title":"Day Count","type":"string"}},"required":["id","notional","schedule","index"]},"option_payoff":{"description":"Vanilla call/put fixed at `expiry` on an underlying or an observable, optionally gated by conditions. underlying + relative strike: notional * max(phi*(S_T/S_ref - k), 0); absolute strike: notional * max(phi*(X_T - K), 0) (notional = number of units). An observable (basket, spread, worst-of performance) takes an absolute strike in its units.","fields":{"id":{"title":"Id","type":"string"},"underlying":{"anyOf":[{"type":"string"},{"type":"null"}],"default":null,"title":"Underlying"},"observable":{"anyOf":[{"type":"string"},{"type":"null"}],"default":null,"title":"Observable"},"option_type":{"enum":["call","put"],"title":"Option Type","type":"string"},"strike":{"title":"Strike","type":"number"},"strike_mode":{"anyOf":[{"enum":["relative","absolute"],"type":"string"},{"type":"null"}],"default":null,"description":"default relative for an underlying; must be absolute for an observable","title":"Strike Mode"},"notional":{"exclusiveMinimum":0,"title":"Notional","type":"number"},"position":{"default":"long","enum":["long","short"],"title":"Position","type":"string"},"expiry":{"anyOf":[{"format":"date","type":"string"},{"type":"string"}],"default":"maturity","title":"Expiry"},"payment_date":{"anyOf":[{"format":"date","type":"string"},{"type":"string"},{"type":"null"}],"default":null,"description":"default: expiry","title":"Payment Date"},"conditions":{"items":{"additionalProperties":true,"type":"object"},"title":"Conditions","type":"array"}},"required":["id","option_type","strike","notional"]},"range_accrual":{"description":"Daily range accrual: coupon = notional * rate * yearfraction * (weighted days on which EVERY `range` condition holds / weighted observation days). Rate: fixed `rate`, or a floating `index` with the floating_leg fields. A range reads any observable: one underlying, a rate, a spread or basket (`linear`), a worst-of (`min_of`); several ranges = all underlyings must be in range.","fields":{"fixing":{"default":"in_advance","enum":["in_advance","in_arrears","compounded_in_arrears"],"title":"Fixing","type":"string"},"fixing_lag":{"anyOf":[{"minimum":0,"type":"integer"},{"type":"null"}],"default":null,"description":"business days before accrual start (in_advance) or end (in_arrears); default: the index's fixing days. Unused by compounded_in_arrears","title":"Fixing Lag"},"fixing_calendar":{"anyOf":[{"type":"string"},{"type":"null"}],"default":null,"description":"default: the index's fixing calendar","title":"Fixing Calendar"},"lockout_days":{"default":0,"description":"compounded_in_arrears only: the last n daily rates of a period equal the rate of the business day before them","minimum":0,"title":"Lockout Days","type":"integer"},"gearing":{"anyOf":[{"type":"number"},{"items":{"anyOf":[{"type":"number"},{"type":"null"}]},"type":"array"},{"additionalProperties":{"anyOf":[{"type":"number"},{"type":"null"}]},"type":"object"}],"default":1.0,"description":"multiplier on the index; a number, a list with one value per schedule period (paid ones included), or {date: value} steps keyed by period start (e.g. {effective_date: 0.03, 1Y: 0.04})","title":"Gearing"},"spread":{"anyOf":[{"type":"number"},{"items":{"anyOf":[{"type":"number"},{"type":"null"}]},"type":"array"},{"additionalProperties":{"anyOf":[{"type":"number"},{"type":"null"}]},"type":"object"}],"default":0.0,"description":"added after gearing; a number, a list with one value per schedule period (paid ones included), or {date: value} steps keyed by period start (e.g. {effective_date: 0.03, 1Y: 0.04})","title":"Spread"},"cap":{"anyOf":[{"type":"number"},{"items":{"anyOf":[{"type":"number"},{"type":"null"}]},"type":"array"},{"additionalProperties":{"anyOf":[{"type":"number"},{"type":"null"}]},"type":"object"},{"type":"null"}],"default":null,"description":"cap on the period rate (after gearing and spread); a number, a list with one value per schedule period (paid ones included), or {date: value} steps keyed by period start (e.g. {effective_date: 0.03, 1Y: 0.04})","title":"Cap"},"floor":{"anyOf":[{"type":"number"},{"items":{"anyOf":[{"type":"number"},{"type":"null"}]},"type":"array"},{"additionalProperties":{"anyOf":[{"type":"number"},{"type":"null"}]},"type":"object"},{"type":"null"}],"default":null,"description":"floor on the period rate (after gearing and spread); a number, a list with one value per schedule period (paid ones included), or {date: value} steps keyed by period start (e.g. {effective_date: 0.03, 1Y: 0.04})","title":"Floor"},"id":{"title":"Id","type":"string"},"notional":{"anyOf":[{"type":"number"},{"items":{"anyOf":[{"type":"number"},{"type":"null"}]},"type":"array"},{"additionalProperties":{"anyOf":[{"type":"number"},{"type":"null"}]},"type":"object"}],"description":"> 0; a number, a list with one value per schedule period (paid ones included), or {date: value} steps keyed by period start (e.g. {effective_date: 0.03, 1Y: 0.04}); a varying notional amortises the coupons only","title":"Notional"},"schedule":{"description":"schedule of accrual END dates (the first period starts at accrual_start)","title":"Schedule","type":"string"},"accrual_start":{"anyOf":[{"format":"date","type":"string"},{"type":"string"}],"default":"effective_date","description":"start of the first accrual period","title":"Accrual Start"},"payment_lag":{"default":0,"description":"business days from accrual end to payment","minimum":0,"title":"Payment Lag","type":"integer"},"payment_calendar":{"default":"WeekendsOnly","title":"Payment Calendar","type":"string"},"position":{"default":"long","enum":["long","short"],"title":"Position","type":"string"},"conditions":{"description":"knock_in (kick-in) / knock_out conditions; a period's coupon counts barrier hits on or before its accrual end","items":{"additionalProperties":true,"type":"object"},"title":"Conditions","type":"array"},"rate":{"anyOf":[{"type":"number"},{"items":{"anyOf":[{"type":"number"},{"type":"null"}]},"type":"array"},{"additionalProperties":{"anyOf":[{"type":"number"},{"type":"null"}]},"type":"object"},{"type":"null"}],"default":null,"description":"fixed coupon rate (or give `index`); a number, a list with one value per schedule period (paid ones included), or {date: value} steps keyed by period start (e.g. {effective_date: 0.03, 1Y: 0.04})","title":"Rate"},"index":{"anyOf":[{"type":"string"},{"type":"null"}],"default":null,"description":"floating coupon index observable (or give `rate`)","title":"Index"},"day_count":{"default":"Thirty360.BondBasis","title":"Day Count","type":"string"},"range":{"description":"all must hold on a day for it to accrue; a period where every bound is null accrues every day","items":{"$ref":"#/$defs/_Range"},"minItems":1,"title":"Range","type":"array"},"observation_calendar":{"default":"WeekendsOnly","title":"Observation Calendar","type":"string"},"day_basis":{"default":"business","description":"business: each business day weighs 1; calendar: every calendar day counts, carrying the previous business day's observation","enum":["business","calendar"],"title":"Day Basis","type":"string"},"range_cutoff_days":{"default":0,"description":"the last n observation days of a period use the observation of the business day before them","minimum":0,"title":"Range Cutoff Days","type":"integer"}},"required":["id","notional","schedule","range"],"definitions":{"_Range":{"additionalProperties":false,"properties":{"observable":{"title":"Observable","type":"string"},"lower":{"anyOf":[{"type":"number"},{"items":{"anyOf":[{"type":"number"},{"type":"null"}]},"type":"array"},{"additionalProperties":{"anyOf":[{"type":"number"},{"type":"null"}]},"type":"object"},{"type":"null"}],"default":null,"description":"lower bound; a number, a list with one value per schedule period (paid ones included), or {date: value} steps keyed by period start (e.g. {effective_date: 0.03, 1Y: 0.04}); null = unbounded","title":"Lower"},"upper":{"anyOf":[{"type":"number"},{"items":{"anyOf":[{"type":"number"},{"type":"null"}]},"type":"array"},{"additionalProperties":{"anyOf":[{"type":"number"},{"type":"null"}]},"type":"object"},{"type":"null"}],"default":null,"description":"upper bound; a number, a list with one value per schedule period (paid ones included), or {date: value} steps keyed by period start (e.g. {effective_date: 0.03, 1Y: 0.04}); null = unbounded","title":"Upper"},"lower_inclusive":{"default":true,"title":"Lower Inclusive","type":"boolean"},"upper_inclusive":{"default":true,"title":"Upper Inclusive","type":"boolean"}},"required":["observable"],"title":"_Range","type":"object"}}}},"condition":{"knock_in":{"description":"Kick-in: a cashflow of the leg is paid only if the barrier was hit on an observation date on or before its cut-off (option expiry / coupon accrual end / payment date). One-date schedule at expiry = European knock-in; daily = American.","fields":{"underlying":{"anyOf":[{"type":"string"},{"type":"null"}],"default":null,"description":"simulated underlying (or use `observable`)","title":"Underlying"},"observable":{"anyOf":[{"type":"string"},{"type":"null"}],"default":null,"description":"any observable; the barrier is in its units","title":"Observable"},"direction":{"description":"up: hit when value >= barrier; down: when <= barrier","enum":["up","down"],"title":"Direction","type":"string"},"barrier":{"title":"Barrier","type":"number"},"barrier_mode":{"anyOf":[{"enum":["relative","absolute"],"type":"string"},{"type":"null"}],"default":null,"description":"underlying: relative (default, fraction of the reference level) or absolute; observable: absolute only","title":"Barrier Mode"},"observation":{"description":"schedule name, or 'continuous' (analytic only)","title":"Observation","type":"string"}},"required":["direction","barrier","observation"]},"knock_out":{"description":"A cashflow of the leg is paid only if the barrier was NOT hit on or before its cut-off. Kills this leg only; use a termination event to end the whole trade.","fields":{"underlying":{"anyOf":[{"type":"string"},{"type":"null"}],"default":null,"description":"simulated underlying (or use `observable`)","title":"Underlying"},"observable":{"anyOf":[{"type":"string"},{"type":"null"}],"default":null,"description":"any observable; the barrier is in its units","title":"Observable"},"direction":{"description":"up: hit when value >= barrier; down: when <= barrier","enum":["up","down"],"title":"Direction","type":"string"},"barrier":{"title":"Barrier","type":"number"},"barrier_mode":{"anyOf":[{"enum":["relative","absolute"],"type":"string"},{"type":"null"}],"default":null,"description":"underlying: relative (default, fraction of the reference level) or absolute; observable: absolute only","title":"Barrier Mode"},"observation":{"description":"schedule name, or 'continuous' (analytic only)","title":"Observation","type":"string"}},"required":["direction","barrier","observation"]}},"event":{"bermudan_call":{"description":"Bermudan early exercise priced by Longstaff-Schwartz regression. On each `observation` date the `exerciser` may end the trade: the holder receives `exercise_price` (cash, e.g. the call price 1,000,000 for par) plus the intrinsic value of `exercise_option` if given; later cashflows are cancelled (a cashflow ON the date is paid if settle_on_event_date). issuer = callable bond / cancellable note (exercised when that is cheaper than continuing); holder = puttable bond / Bermudan option (exercised when that beats continuing). The exercise rule is fitted on pricing.exercise_fit_paths independent paths, so it is slightly sub-optimal and the price leans against the exerciser; `regressors` (observables or underlyings) default to the model state.","fields":{"id":{"title":"Id","type":"string"},"observation":{"description":"schedule of exercise dates (notice already taken into account)","title":"Observation","type":"string"},"exerciser":{"default":"issuer","description":"issuer: callable / cancellable by the payer; holder: puttable / Bermudan option","enum":["issuer","holder"],"title":"Exerciser","type":"string"},"exercise_price":{"anyOf":[{"type":"number"},{"items":{"anyOf":[{"type":"number"},{"type":"null"}]},"type":"array"},{"additionalProperties":{"anyOf":[{"type":"number"},{"type":"null"}]},"type":"object"}],"default":0.0,"description":"cash received by the holder on exercise (e.g. notional for a call at par); a number, one value per schedule date, or {date: value} steps; null = no exercise on that date","title":"Exercise Price"},"exercise_option":{"anyOf":[{"$ref":"#/$defs/ExerciseOption"},{"type":"null"}],"default":null,"description":"add the intrinsic value of an option on exercise (Bermudan option: price 0 + option)"},"regressors":{"description":"observables / underlyings the continuation value is regressed on; default: every model underlying, plus the short rate under hull_white","items":{"type":"string"},"title":"Regressors","type":"array"},"degree":{"default":2,"description":"polynomial degree of the regression basis","maximum":4,"minimum":1,"title":"Degree","type":"integer"},"settle_on_event_date":{"default":true,"description":"a cashflow paid on the exercise date is still paid (the coupon before the call)","title":"Settle On Event Date","type":"boolean"}},"required":["id","observation"],"definitions":{"ExerciseOption":{"additionalProperties":false,"description":"Intrinsic value received on exercise: notional * max(phi * (X - K), 0), units as in option_payoff.","properties":{"underlying":{"anyOf":[{"type":"string"},{"type":"null"}],"default":null,"title":"Underlying"},"observable":{"anyOf":[{"type":"string"},{"type":"null"}],"default":null,"title":"Observable"},"option_type":{"enum":["call","put"],"title":"Option Type","type":"string"},"strike":{"title":"Strike","type":"number"},"strike_mode":{"anyOf":[{"enum":["relative","absolute"],"type":"string"},{"type":"null"}],"default":null,"description":"default relative for an underlying; must be absolute for an observable","title":"Strike Mode"},"notional":{"exclusiveMinimum":0,"title":"Notional","type":"number"}},"required":["option_type","strike","notional"],"title":"ExerciseOption","type":"object"}}},"knock_out":{"description":"Terminates the whole trade on the first observation date the barrier is hit. Cashflows paid after that date are cancelled; a cashflow ON that date is paid only if settle_on_event_date (autocall style). Optional cash `rebate` paid at_hit or at_maturity.","fields":{"underlying":{"anyOf":[{"type":"string"},{"type":"null"}],"default":null,"description":"simulated underlying (or use `observable`)","title":"Underlying"},"observable":{"anyOf":[{"type":"string"},{"type":"null"}],"default":null,"description":"any observable; the barrier is in its units","title":"Observable"},"direction":{"description":"up: hit when value >= barrier; down: when <= barrier","enum":["up","down"],"title":"Direction","type":"string"},"barrier":{"title":"Barrier","type":"number"},"barrier_mode":{"anyOf":[{"enum":["relative","absolute"],"type":"string"},{"type":"null"}],"default":null,"description":"underlying: relative (default, fraction of the reference level) or absolute; observable: absolute only","title":"Barrier Mode"},"observation":{"description":"schedule name, or 'continuous' (analytic only)","title":"Observation","type":"string"},"id":{"title":"Id","type":"string"},"rebate":{"default":0.0,"description":"cash amount (not a fraction of notional)","title":"Rebate","type":"number"},"rebate_payment":{"default":"at_hit","enum":["at_hit","at_maturity"],"title":"Rebate Payment","type":"string"},"settle_on_event_date":{"default":false,"title":"Settle On Event Date","type":"boolean"}},"required":["direction","barrier","observation","id"]},"target":{"description":"Target accumulation (TARN): coupons of `legs` accumulate on their payment dates; on the first payment date the total reaches `target` the trade terminates: that date's cashflows are paid (the crossing coupon full, capped at the remaining target, or none), later ones are cancelled, and `rebate` (e.g. the early redemption) is paid on that date if it is before maturity. `guaranteed`: if the target is never reached, the shortfall is paid at maturity.","fields":{"id":{"title":"Id","type":"string"},"legs":{"description":"ids of the coupon legs that accumulate","items":{"type":"string"},"minItems":1,"title":"Legs","type":"array"},"target":{"description":"cash amount, e.g. 0.10 * notional for a 10% target","exclusiveMinimum":0,"title":"Target","type":"number"},"crossing_coupon":{"default":"capped","enum":["capped","full","none"],"title":"Crossing Coupon","type":"string"},"rebate":{"default":0.0,"description":"cash paid on an early termination date (not at maturity)","title":"Rebate","type":"number"},"guaranteed":{"default":false,"title":"Guaranteed","type":"boolean"},"accumulated":{"anyOf":[{"minimum":0,"type":"number"},{"type":"null"}],"default":null,"description":"override: coupons of `legs` already paid on or before the valuation date (cash). Default: computed from the legs' past fixings, which history must then cover","title":"Accumulated"}},"required":["id","legs","target"]}},"analytic":{"european_vanilla":{"description":"One unconditioned option_payoff leg (plus any fixed legs), no termination events. Engine: model's analytic European engine (BSM or Heston).","fields":{},"required":[]},"single_barrier":{"description":"One option_payoff leg with EITHER one continuous knock_in/knock_out condition and no events, OR no conditions and one continuous knock_out event (rebate paid at_hit). Engine: QuantLib AnalyticBarrierEngine (Black-Scholes only).","fields":{},"required":[]}}}</script>
+<!-- CATALOG:END -->
+
+<script>
+(function () {
+  // ---- theme toggle (preference kept per browser; page works without storage)
+  var root = document.documentElement;
+  try { var saved = localStorage.getItem("sdp-theme"); if (saved) root.setAttribute("data-theme", saved); } catch (e) {}
+  document.getElementById("theme-btn").addEventListener("click", function () {
+    var dark = root.getAttribute("data-theme") === "dark" ||
+      (!root.getAttribute("data-theme") && matchMedia("(prefers-color-scheme: dark)").matches);
+    var next = dark ? "light" : "dark";
+    root.setAttribute("data-theme", next);
+    try { localStorage.setItem("sdp-theme", next); } catch (e) {}
+  });
+
+  function esc(s) { return String(s).replace(/[&<>"]/g, function (c) { return {"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;"}[c]; }); }
+
+  // ---- light syntax colouring for YAML / JSON / shell blocks
+  document.querySelectorAll("pre code").forEach(function (el) {
+    var lang = el.className;
+    el.innerHTML = el.textContent.split("\n").map(function (line) {
+      var code = line, comment = "";
+      var m = (lang === "json") ? null : line.match(/(^|\s)#.*$/);
+      if (m) { code = line.slice(0, m.index); comment = line.slice(m.index); }
+      code = esc(code);
+      if (lang === "yaml") code = code.replace(/^(\s*-?\s*)([A-Za-z_][\w.\-]*)(:)(?=\s|$)/, '$1<span class="tok-k">$2</span>$3');
+      if (lang === "json") code = code.replace(/(&quot;[^&]*?&quot;)(\s*:)/g, '<span class="tok-k">$1</span>$2')
+                                      .replace(/(:\s*)(&quot;.*?&quot;)/g, '$1<span class="tok-s">$2</span>');
+      return code + (comment ? '<span class="tok-c">' + esc(comment) + "</span>" : "");
+    }).join("\n");
+  });
+
+  // ---- table of contents highlight
+  var links = Array.prototype.slice.call(document.querySelectorAll("nav.toc a"));
+  var byId = {}; links.forEach(function (a) { byId[a.getAttribute("href").slice(1)] = a; });
+  var sections = Array.prototype.slice.call(document.querySelectorAll("main section"));
+  function markActive() {
+    var current = sections[0];
+    sections.forEach(function (s) { if (s.getBoundingClientRect().top < 140) current = s; });
+    links.forEach(function (a) { a.classList.toggle("active", a === byId[current.id]); });
+  }
+  addEventListener("scroll", markActive, {passive: true});
+  markActive();
+
+  // ---- component reference, rendered from the embedded catalog
+  var dataEl = document.getElementById("catalog-data");
+  var list = document.getElementById("ref-list");
+  if (!dataEl) { list.innerHTML = '<p class="empty">Catalog not embedded yet. Run <code>$PY docs/build_catalog.py</code>.</p>'; return; }
+  var CAT = JSON.parse(dataEl.textContent);
+  var KIND_LABEL = {curve: "curve", vol: "vol", swaption_vol: "swaption vol", schedule: "schedule", model: "model",
+                    observable: "observable", leg: "leg", condition: "condition", event: "event", analytic: "closed form"};
+
+  function typeOf(s) {
+    if (!s) return "any";
+    if (s.$ref) return s.$ref.split("/").pop().replace(/^_/, "");
+    if (s.enum) return s.enum.map(function (v) { return JSON.stringify(v); }).join(" | ");
+    if (s.const !== undefined) return JSON.stringify(s.const);
+    if (s.anyOf) {
+      var kinds = s.anyOf.map(function (x) { return x.type; });
+      var nul = kinds.indexOf("null") >= 0 ? " | null" : "";
+      if (kinds.indexOf("number") >= 0 && kinds.indexOf("array") >= 0 && kinds.indexOf("object") >= 0)
+        return "per-period value" + nul;
+      if (s.anyOf.some(function (x) { return x.format === "date"; })) return "date" + nul;
+      var seen = [];
+      s.anyOf.forEach(function (x) { var t = typeOf(x); if (seen.indexOf(t) < 0) seen.push(t); });
+      return seen.join(" | ");
+    }
+    if (s.type === "array") return "list of " + typeOf(s.items);
+    if (s.type === "object") return s.additionalProperties ? "{key: " + typeOf(s.additionalProperties) + "}" : "mapping";
+    if (s.format === "date") return "date";
+    return s.type || "any";
+  }
+  function bounds(s) {
+    var out = [];
+    if (s.minimum !== undefined) out.push("≥ " + s.minimum);
+    if (s.exclusiveMinimum !== undefined) out.push("> " + s.exclusiveMinimum);
+    if (s.maximum !== undefined) out.push("≤ " + s.maximum);
+    if (s.exclusiveMaximum !== undefined) out.push("< " + s.exclusiveMaximum);
+    if (s.minItems !== undefined) out.push("at least " + s.minItems);
+    return out.join(", ");
+  }
+  function dflt(s) {
+    if (!("default" in s)) return "";
+    if (s.default === null) return '<span class="fdesc">none</span>';
+    return "<code>" + esc(JSON.stringify(s.default)) + "</code>";
+  }
+  function fieldTable(fields, required) {
+    var names = Object.keys(fields || {});
+    if (!names.length) return '<p class="empty">No fields.</p>';
+    var rows = names.map(function (n) {
+      var s = fields[n], b = bounds(s);
+      return "<tr><td><code>" + esc(n) + "</code>" + (required.indexOf(n) >= 0 ? '<span class="req">required</span>' : "") +
+        "</td><td><code>" + esc(typeOf(s)) + "</code>" + (b ? '<div class="fdesc">' + esc(b) + "</div>" : "") +
+        "</td><td>" + dflt(s) + '</td><td class="fdesc">' + esc(s.description || "") + "</td></tr>";
+    });
+    return '<div class="table-wrap"><table><tr><th>field</th><th>type</th><th>default</th><th>description</th></tr>' +
+      rows.join("") + "</table></div>";
+  }
+
+  var items = [];
+  Object.keys(CAT).forEach(function (kind) {
+    Object.keys(CAT[kind]).forEach(function (name) {
+      var c = CAT[kind][name];
+      var defs = c.definitions || {};
+      var html = '<details class="comp" data-kind="' + kind + '"><summary><span class="cname">' + esc(name) +
+        '</span><span class="ckind">' + esc(KIND_LABEL[kind] || kind) + '</span><span class="cdesc">' + esc(c.description || "") +
+        '</span></summary><div class="body">' + fieldTable(c.fields, c.required || []);
+      Object.keys(defs).forEach(function (d) {
+        html += "<h4><code>" + esc(d.replace(/^_/, "")) + "</code></h4>" +
+          (defs[d].description ? '<p class="fdesc">' + esc(defs[d].description) + "</p>" : "") +
+          fieldTable(defs[d].properties, defs[d].required || []);
+      });
+      html += "</div></details>";
+      var text = (name + " " + kind + " " + (c.description || "") + " " + JSON.stringify(c.fields) + " " + Object.keys(defs).join(" ")).toLowerCase();
+      items.push({kind: kind, html: html, text: text});
+    });
+  });
+
+  var tabs = document.getElementById("ref-tabs"), search = document.getElementById("ref-search");
+  var active = "all";
+  ["all"].concat(Object.keys(CAT)).forEach(function (k) {
+    var b = document.createElement("button");
+    b.type = "button"; b.textContent = k === "all" ? "all" : (KIND_LABEL[k] || k);
+    b.setAttribute("aria-pressed", k === active);
+    b.addEventListener("click", function () {
+      active = k;
+      tabs.querySelectorAll("button").forEach(function (x) { x.setAttribute("aria-pressed", x === b); });
+      render();
+    });
+    tabs.appendChild(b);
+  });
+  function render() {
+    var q = search.value.trim().toLowerCase();
+    var shown = items.filter(function (it) { return (active === "all" || it.kind === active) && (!q || it.text.indexOf(q) >= 0); });
+    list.innerHTML = shown.length ? shown.map(function (it) { return it.html; }).join("") : '<p class="empty">No component matches.</p>';
+    if (q && shown.length <= 3) list.querySelectorAll("details").forEach(function (d) { d.open = true; });
+  }
+  search.addEventListener("input", render);
+  render();
+})();
+</script>
+</body>
+</html>
