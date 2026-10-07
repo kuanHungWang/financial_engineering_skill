@@ -15,6 +15,7 @@ import bisect
 import contextlib
 import datetime as dt
 import math
+import re
 import sys
 import time
 from dataclasses import dataclass, field
@@ -125,15 +126,53 @@ def load_document(source: str) -> tuple[dict, Path]:
     return doc, base
 
 
+class OverrideError(ValueError):
+    """A --set expression that cannot be applied; `path` is the PATH as given."""
+
+    def __init__(self, path: str, message: str):
+        super().__init__(message)
+        self.path = path
+
+
 def apply_overrides(doc: dict, sets: list[str]) -> dict:
-    """--set pricing.num_paths=50000  (value parsed as YAML)."""
+    """--set pricing.num_paths=50000  (value parsed as YAML).
+
+    Numeric segments index into lists: trade.legs.0.rate (or trade.legs[0].rate).
+    Missing mapping keys are created; list indices must already exist.
+    """
     for s in sets or []:
-        key, _, val = s.partition("=")
+        key, eq, val = s.partition("=")
+        if not eq or not key:
+            raise OverrideError(key, f"--set expects PATH=VALUE, got {s!r}")
+        parts = re.sub(r"\[(\d+)\]", r".\1", key).split(".")
+        if any(p == "" for p in parts):
+            raise OverrideError(key, f"--set path {key!r} has an empty segment")
+        try:
+            value = yaml.safe_load(val)
+        except yaml.YAMLError as e:
+            raise OverrideError(key, f"--set value for {key!r} is not valid YAML: {e}") from None
         node = doc
-        parts = key.split(".")
-        for p in parts[:-1]:
-            node = node.setdefault(p, {})
-        node[parts[-1]] = yaml.safe_load(val)
+        for i, p in enumerate(parts):
+            here = ".".join(parts[:i]) or "<root>"
+            last = i == len(parts) - 1
+            if isinstance(node, list):
+                if not p.isdigit():
+                    raise OverrideError(key, f"{here} is a list; index it with a number, not {p!r}")
+                idx = int(p)
+                if idx >= len(node):
+                    raise OverrideError(key, f"index {idx} out of range: {here} has {len(node)} item(s)")
+                if last:
+                    node[idx] = value
+                else:
+                    node = node[idx]
+            elif isinstance(node, dict):
+                if last:
+                    node[p] = value
+                else:
+                    node = node.setdefault(p, {})
+            else:
+                raise OverrideError(key, f"cannot set {p!r} inside {here}: it is a {type(node).__name__}, "
+                                         "not a mapping or list")
     return doc
 
 
