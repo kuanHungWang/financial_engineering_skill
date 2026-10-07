@@ -147,8 +147,12 @@ def evaluate(p, name, dates) -> np.ndarray:
     """Values on `dates` (any order): shape (len(dates), n_paths) or (len(dates), 1)."""
     cls, spec = lookup(p.v, name)
     if not cls.is_leaf:
-        return cls.combine(spec, [evaluate(p, n, dates) for n in cls.deps(spec)])
-    return evaluate_leaf(p, cls, spec, dates)
+        x = cls.combine(spec, [evaluate(p, n, dates) for n in cls.deps(spec)])
+    else:
+        x = evaluate_leaf(p, cls, spec, dates)
+    if getattr(p, "reads", None) is not None:          # inspecting: keep what was computed, date by date
+        p.reads.setdefault(name, {}).update(zip(dates, x))
+    return x
 
 
 def evaluate_leaf(p, cls, spec, dates) -> np.ndarray:

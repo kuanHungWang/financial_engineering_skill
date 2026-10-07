@@ -645,7 +645,7 @@ def _build_graph(plan: Plan):
                 add(key, deps, f"{cls.type_name} observable", lambda r: None)
             return key
 
-        pctx = lambda r: PCtx(v, r["fixings"], r["fixings"].n_paths)  # noqa: E731
+        pctx = lambda r: PCtx(v, r["fixings"], r["fixings"].n_paths, r.get(INSPECT_READS))  # noqa: E731
         for cls, spec, path in trade.legs:
             used = {getattr(spec, "schedule", None)} | {c.observation for _, c, _ in trade.conditions[path]}
             deps = ["fixings"] + [f"schedule:{x}" for x in sched_refs if x in used] + \
@@ -692,16 +692,24 @@ def _sim_curve(plan, h, ref, horizon):
 
 
 # ------------------------------------------------------------------ execution
-def run(plan: Plan) -> dict:
-    """Execute the graph. Library chatter goes to stderr so stdout stays JSON."""
+INSPECT_READS = "_inspect_reads"   # results key: observable name -> {date: values} (PCtx.reads), when inspecting
+INSPECT_FLOWS = "_inspect_flows"   # results key: the price node's per-path cashflows and PV, when inspecting
+
+
+def run(plan: Plan, keep: dict | None = None) -> dict:
+    """Execute the graph. Library chatter goes to stderr so stdout stays JSON.
+    keep: when given, receives every node result under keep["results"] (see pricer/inspect.py)."""
     if not plan.report.ok:
         raise RuntimeError("plan has validation errors; fix them before running")
     with contextlib.redirect_stdout(sys.stderr):
-        return _run(plan)
+        return _run(plan, keep)
 
 
-def _run(plan: Plan) -> dict:
+def _run(plan: Plan, keep: dict | None = None) -> dict:
     results, timings = {}, {}
+    if keep is not None:
+        results[INSPECT_READS], results[INSPECT_FLOWS] = {}, {}
+        keep["results"] = results
 
     def ev(key):
         if key not in results:
@@ -979,6 +987,9 @@ def _aggregate_mc(plan: Plan, r) -> dict:
         ex_diag["exercise_payment_pv"] = owner_pv("exercise", ex_spec.id)
         events_out[ex_spec.id] = ex_diag
 
+    if INSPECT_FLOWS in r:
+        r[INSPECT_FLOWS].update(rows=f.rows, pv=pv, first=f.first, owner=f.owner,
+                                events=[sp.id for sp, _ in f.events], exercise_date=ex_date)
     mean = float(pv.mean())
     samples = (pv[0::2] + pv[1::2]) / 2 if s.antithetic else pv
     se = float(samples.std(ddof=1) / math.sqrt(len(samples)))
