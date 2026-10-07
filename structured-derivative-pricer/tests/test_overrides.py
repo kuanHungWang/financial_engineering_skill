@@ -45,6 +45,10 @@ def test_whole_list_element_can_be_replaced():
     ("trade.legs.first.rate=0.09", "is a list; index it with a number"),
     ("trade.legs.0.rate.x=1", "it is a float"),
     ("trade..rate=1", "empty segment"),
+    ("trade.legs.\u00b2.rate=1", "is a list; index it with a number"),
+    ("trade.legs[\u00b2].rate=1", "list indices must be non-negative integers"),
+    ("trade.legs[-1].rate=1", "list indices must be non-negative integers"),
+    ("trade.legs[x].rate=1", "list indices must be non-negative integers"),
     ("pricing.num_paths=[1", "not valid YAML"),
     ("pricing.num_paths", "expects PATH=VALUE"),
 ])

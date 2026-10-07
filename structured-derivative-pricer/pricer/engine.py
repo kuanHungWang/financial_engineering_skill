@@ -144,9 +144,12 @@ def apply_overrides(doc: dict, sets: list[str]) -> dict:
         key, eq, val = s.partition("=")
         if not eq or not key:
             raise OverrideError(key, f"--set expects PATH=VALUE, got {s!r}")
-        parts = re.sub(r"\[(\d+)\]", r".\1", key).split(".")
+        parts = re.sub(r"\[([0-9]+)\]", r".\1", key).split(".")
         if any(p == "" for p in parts):
             raise OverrideError(key, f"--set path {key!r} has an empty segment")
+        if any("[" in p or "]" in p for p in parts):
+            raise OverrideError(key, f"--set path {key!r}: list indices must be non-negative integers, "
+                                     "e.g. legs[0] or legs.0")
         try:
             value = yaml.safe_load(val)
         except yaml.YAMLError as e:
@@ -156,7 +159,7 @@ def apply_overrides(doc: dict, sets: list[str]) -> dict:
             here = ".".join(parts[:i]) or "<root>"
             last = i == len(parts) - 1
             if isinstance(node, list):
-                if not p.isdigit():
+                if not (p.isascii() and p.isdigit()):
                     raise OverrideError(key, f"{here} is a list; index it with a number, not {p!r}")
                 idx = int(p)
                 if idx >= len(node):
