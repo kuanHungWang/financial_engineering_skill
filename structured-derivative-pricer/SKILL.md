@@ -213,7 +213,7 @@ the market file, and compare the `*_stats.csv` files.
 
 Models:
 - `black_scholes`: one or several correlated equity underlyings (constant / term / Dupire local vol).
-- `heston`: single asset, given or calibrated parameters.
+- `heston`: single asset, given or calibrated parameters (fitted in implied vol to every surface quote; `model_diagnostics.calibration_rmse` is in Black vol, and a fit worse than 2 vol points RMS, or one where the optimizer did not converge, warns).
 - `hull_white`: 1F rates, given `mean_reversion` and `volatility`, or calibrated to ATM swaptions
   (`calibration`: coterminal, whole matrix, or listed expiry x tenor points).
 

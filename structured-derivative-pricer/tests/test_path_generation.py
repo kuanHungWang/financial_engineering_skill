@@ -408,8 +408,8 @@ def test_heston_calibration_recovers_the_parameters_behind_a_surface(curve):
                                      ql.QuoteHandle(ql.SimpleQuote(0.2)), curve, u.dividend)
             h.setPricingEngine(engine)
             quotes.append((ql.Period(tenor), k, h.impliedVolatility(h.modelValue(), 1e-12, 5000, 1e-3, 4.0)))
-    _, model, rmse = calibrate_heston(curve, u.dividend, ql.NullCalendar(), SPOT, quotes)
+    _, model, fit = calibrate_heston(curve, u.dividend, ql.NullCalendar(), SPOT, quotes)
     fitted = dict(v0=model.v0(), kappa=model.kappa(), theta=model.theta(), sigma=model.sigma(), rho=model.rho())
-    assert rmse < 1e-3
+    assert fit["rmse"] < 1e-3 and fit["converged"]
     for name, value in HESTON_ROUGH.items():
         assert fitted[name] == pytest.approx(value, rel=1e-2), (name, fitted)
