@@ -4,7 +4,8 @@
     export_engine.py [DEST] [--trade TRADE ...] [--set k=v ...] [--upgrade] [--check-env]
 
 DEST (default ./pricing_engine) receives a pinned, self-contained copy:
-    pricer/ scripts/ reference/ examples/ tests/   the engine, its docs, examples and test suite
+    pricer/ scripts/ reference/ examples/ tests/ templates/   the engine, its docs, examples, test suite and
+                                                  report templates
     requirements.lock.txt  .python-version         every library (with its dependencies) at its exact version
     ENGINE.json                                    engine version, source, file checksums
     price.sh  baseline.sh  README.md               entry points and a guide written for people
@@ -45,12 +46,12 @@ warnings.filterwarnings("ignore")
 
 from pricer import apply_overrides, build_plan, load_document, run  # noqa: E402
 
-TREES = ["pricer", "reference", "examples", "tests"]           # copied whole
-SCRIPTS = ["price.py", "baseline.py", "make_mock_market.py", "setup.sh"]
+TREES = ["pricer", "reference", "examples", "tests", "templates"]   # copied whole
+SCRIPTS = ["price.py", "baseline.py", "report.py", "make_mock_market.py", "setup.sh"]
 VERSIONED = ["pricer", "scripts/price.py", "requirements.txt", "requirements.lock.txt"]  # hashed into the version
 RUNNABLE = ["pricer", "scripts", "requirements.txt", "requirements.lock.txt", ".python-version", "ENGINE.json",
-            "price.sh", "baseline.sh"]                          # what an archived engine keeps
-ENGINE_OWNED = TREES + RUNNABLE[1:] + ["README.md", ".gitignore"]
+            "price.sh", "baseline.sh", "report.sh", "templates"]  # what an archived engine keeps
+ENGINE_OWNED = list(dict.fromkeys(TREES + RUNNABLE[1:] + ["README.md", ".gitignore"]))
 IGNORE = shutil.ignore_patterns("__pycache__", "*.pyc", ".pytest_cache", "inspect_*", "test_export.py")  # the copy has no exporter
 
 
@@ -195,6 +196,8 @@ def build(stage: Path, version: str, pins: dict[str, str], lock: str, shown: str
     _write(stage / ".python-version", pyver + "\n")
     _write(stage / "price.sh", WRAPPER.format(name="price", example="price ../trade.yaml"), executable=True)
     _write(stage / "baseline.sh", WRAPPER.format(name="baseline", example="verify"), executable=True)
+    _write(stage / "report.sh", WRAPPER.format(name="report", example="evidence ../trade.yaml --out-dir ../report"),
+           executable=True)
     _write(stage / ".gitignore", ".venv/\n__pycache__/\n*.pyc\n.pytest_cache/\n")
     direct = {_canon(re.split(r"[<>=!~\[; @]", x.split("#", 1)[0].strip(), maxsplit=1)[0])
               for x in (SKILL / "requirements.txt").read_text().splitlines()}
@@ -422,6 +425,17 @@ error, e.g. missing fixings) is shown but not judged. `MISMATCH`: same inputs, d
 part of the output names the cause: engine files edited since export (`engine_files_modified`) or installed
 library versions that differ from the lock (`library_drift`).
 
+## Validation report
+
+`report.sh` produces the material for a model documentation and validation report: convergence, seed stability,
+sensitivities, stress, benchmarks, limiting cases, reference prices, as tables in `report/materials.md` (and
+`report/evidence.json`). Config: `reference/model_report.md`. The report is written from that material, following
+your own template or the SR 11-7 outline in `templates/sr11-7.md`.
+
+```bash
+{name}/report.sh evidence trade.yaml --out-dir report     # or a report config naming the trade
+```
+
 ## Writing or changing a trade
 
 - `reference/components.md`: how term-sheet features map to components, sign conventions, product recipes.
@@ -433,8 +447,9 @@ library versions that differ from the lock (`library_drift`).
 
 ```
 pricer/          engine source (do not edit if you want baselines to keep reproducing)
-scripts/         price.py (CLI), baseline.py, make_mock_market.py, setup.sh
+scripts/         price.py (CLI), baseline.py, report.py, make_mock_market.py, setup.sh
 tests/           the engine's regression suite: .venv/bin/python -m pytest tests -q
+templates/       report outline (sr11-7.md, the default for validation reports)
 ENGINE.json      version = hash of pricer/, scripts/price.py and the lock file; source commit; file checksums
 archive/<ver>/   earlier engine versions, kept runnable after an upgrade
 ```

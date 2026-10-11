@@ -210,6 +210,7 @@ td:first-child { min-width: 110px; }
     <tr><td><code>structured-derivative-pricer/examples/</code></td><td>Ready-to-run trade specs, mock market data and a mock fixings file.</td></tr>
     <tr><td><code>structured-derivative-pricer/reference/</code></td><td>Detailed Markdown references (components, market data, exercise).</td></tr>
     <tr><td><code>structured-derivative-pricer/scripts/make_mock_market.py</code></td><td>Writes clearly labelled mock market data for demos and tests.</td></tr>
+    <tr><td><code>structured-derivative-pricer/scripts/report.py</code></td><td>Material (tests and numbers) for a model validation report; see <a href="#report">Validation report</a>.</td></tr>
   </table></div>
 </section>
 
@@ -369,6 +370,17 @@ price.py inspect  INPUT [--set k=v ...] [--node KEY ...] [--out-dir DIR] [--max-
     and regression coefficients as JSON. It also writes the observable values the legs computed, and the price node’s
     cashflows and PV per path. Stdout gets only a short manifest (files, shapes, a few summary numbers), never the data,
     so it stays small at any number of paths.</p>
+
+  <h3 id="report">Validation report (<code>report.py</code>)</h3>
+  <p><code>scripts/report.py</code> writes a model documentation and validation report for one trade, structured after
+    SR 11-7 (model development and use; validation: conceptual soundness, ongoing monitoring, outcomes analysis).
+    Governance, policies and controls are left out: they differ between organisations.
+    <code>evidence</code> re-prices the trade and its variants (path convergence, seed stability, bump-and-revalue
+    sensitivities on common random numbers, stress scenarios, benchmark models, limiting cases, reference prices) into
+    <code>materials.md</code> (tables) and <code>evidence.json</code>. The report is then written from that material
+    following a template: the user's own format, or the default outline <code>templates/sr11-7.md</code>, with every
+    number copied from the material. Config, template and test criteria: <code>reference/model_report.md</code>.</p>
+<pre><code class="sh">$PY scripts/report.py evidence trade.yaml --out-dir report   # or a report config naming the trade</code></pre>
 
   <h3>Exit codes and output</h3>
   <div class="table-wrap"><table>

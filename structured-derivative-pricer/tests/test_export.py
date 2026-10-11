@@ -113,6 +113,7 @@ def test_upgrade_archives_and_failed_check_leaves_dest(tmp_path):
     assert [b["status"] for b in out["baseline_verification"]["baselines"]] == ["reproduced"]
     arch = dest / "archive" / "older"
     assert (arch / "pricer").is_dir() and (arch / "baseline.sh").is_file()
+    assert (arch / "report.sh").is_file() and (arch / "templates" / "sr11-7.md").is_file()   # report runs too
     # the archived engine still verifies the shared baselines
     code, v = _run([arch / "scripts" / "baseline.py", "verify", "--baselines", dest / "baselines"], proj)
     assert code == 0 and [b["status"] for b in v["baselines"]] == ["reproduced"]
