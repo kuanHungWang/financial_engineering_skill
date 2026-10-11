@@ -73,16 +73,14 @@ After that, run every command below as `$PY <skill_dir>/scripts/price.py ...`.
 When the user asks for model documentation, a validation or model review report, or "SR 11-7", read
 [reference/model_report.md](reference/model_report.md) first. It has the workflow, the report config, the tests and
 the writing rules. In short: `scripts/report.py evidence` runs the tests (convergence, seeds, sensitivities, stress,
-benchmarks, limiting cases, reference prices) into `evidence.json`; you write `narrative.yaml` (purpose, product,
-methodology, data, limitations, monitoring, conclusion); `report.py render` merges them into `report.md`.
-The layout is the user's own template when they give one (converted to a Markdown template with tags; see
-"Templates" in the reference), otherwise the SR 11-7 default `templates/sr11-7.md`. Ask whether they have one.
+benchmarks, limiting cases, reference prices) and writes the material, `materials.md`. You then write `report.md`
+from the material, following the user's own template when they give one (ask), otherwise the SR 11-7 outline
+`templates/sr11-7.md`.
 
-- Every number in the report comes from `evidence.json`; the narrative quotes them with `{{path|format}}` tokens.
-  Never type a computed number, and never compute one outside the engine.
+- Copy every number exactly from `materials.md`; never compute or estimate one yourself.
 - Governance, policies and controls are out of scope (they differ between organisations): write no approval,
-  rating, ownership or inventory content. In a user template such sections are `{{manual:...}}` slots, filled
-  only with what the user supplies.
+  rating, ownership or inventory content. Sections of a user's template that ask for them get only what the user
+  supplies.
 - Ask for reference prices (counterparty, dealer, vendor marks) and data sources; never invent them.
 
 ## Stand-alone copy

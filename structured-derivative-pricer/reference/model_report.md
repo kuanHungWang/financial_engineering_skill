@@ -1,43 +1,32 @@
 # Model documentation and validation report
 
-`scripts/report.py` writes a report on one trade's pricing model. The layout comes from a **template**: the user's
-own format when they give one (see "Templates"), otherwise the default `templates/sr11-7.md`, structured after the
-Federal Reserve / OCC *Supervisory Guidance on Model Risk Management* (SR 11-7, 2011). The evidence is the same
-either way. The default covers SR 11-7's two technical pillars:
+Two parts, two owners:
 
-- **model development, implementation and use**: purpose, product, theory and method, data, assumptions,
-  limitations, implementation checks;
-- **model validation**: conceptual soundness (incl. sensitivity and stress), ongoing monitoring (process
-  verification, benchmarking), outcomes analysis.
+- **The material** (every number): `scripts/report.py evidence` prices the trade and its variants with the engine
+  and writes `materials.md` (tables, one section per topic) and `evidence.json` (the same, unrounded).
+- **The report** (layout and text): you write it, following a **template**: the user's own format when they give
+  one, otherwise `templates/sr11-7.md`, an outline structured after the Federal Reserve / OCC *Supervisory Guidance
+  on Model Risk Management* (SR 11-7, 2011). The default covers SR 11-7's technical pillars: model development,
+  implementation and use (purpose, product, method, data, assumptions, limitations) and model validation
+  (conceptual soundness incl. sensitivity and stress, ongoing monitoring incl. process verification and
+  benchmarking, outcomes analysis).
 
 **Out of scope: governance, policies and controls** (roles, ownership, model inventory, risk tiering, approval,
 independence of validators, board reporting, issue tracking, exceptions). They differ between organisations. Do not
-write them and do not invent a rating or an approval. The default template has no such sections. When a user's
-template has them, they become `{{manual:...}}` slots: filled only with what the user supplies, otherwise left as a
-visible placeholder for the organisation.
+write them and do not invent a rating, approval or sign-off. If a user's template has such sections, fill them only
+with what the user supplied, otherwise leave a visible "[To be completed by the organisation]" line.
 
-## Three steps
+## The material
 
 ```bash
-$PY <skill_dir>/scripts/report.py evidence INPUT --out-dir DIR [--run-tests]   # numbers: DIR/evidence.json
-$PY <skill_dir>/scripts/report.py narrative DIR [--template T.md]            # skeleton: DIR/narrative.yaml
-$PY <skill_dir>/scripts/report.py render DIR                                  # DIR/report.md
+$PY <skill_dir>/scripts/report.py evidence INPUT --out-dir DIR [--run-tests]
 ```
 
-- **evidence** prices the trade and its variants with the engine and writes every result to `evidence.json`.
-  `INPUT` is the trade YAML (all tests at defaults) or a **report config** (below). It prints only a summary:
-  `status_counts` and `attention` (every WARN / FAIL). Exit 1 if a test FAILED, 2 for bad input. It takes about
-  30 pricings: seconds for a fast trade, longer for a large Bermudan; it reports progress on stderr.
-  `--run-tests` also runs the engine's test suite (about a minute) and records the result.
-- **narrative** writes `narrative.yaml` for the template's slots: one block per section a person must write, with
-  guidance as comments, and marks which evidence sections need commentary because a test there is WARN or FAIL.
-  `--template` saves the user's template as `DIR/template.md`, which `render` then uses. It never overwrites
-  (`--force`). It also lists `evidence_not_in_template`.
-- **render** merges template, evidence and narrative into `report.md` and prints `missing_narrative`,
-  `unresolved_tokens`, `manual_placeholders` and `evidence_not_in_template`. It exits 1 until the first two are
-  empty; the report still renders, with visible `[TO BE COMPLETED ...]` markers.
-
-Put `DIR` where the user wants the report (e.g. `reports/<trade id>/`), not in the skill directory.
+`INPUT` is the trade YAML (all tests at defaults) or a **report config** (below). It prints a short summary:
+`status_counts` and `attention` (every WARN / FAIL). Exit 1 if a test FAILED, 2 for bad input. It takes about 30
+pricings: seconds for a fast trade, a few minutes for a large Bermudan; progress goes to stderr. `--run-tests` also
+runs the engine's test suite (about a minute) and records the result. Put `DIR` where the user wants the report
+(e.g. `reports/<trade id>/`), not in the skill directory.
 
 ## Workflow
 
@@ -49,52 +38,48 @@ Put `DIR` where the user wants the report (e.g. `reports/<trade id>/`), not in t
    - **reference prices** for outcomes analysis: counterparty / issuer marks, dealer or vendor quotes, a previous
      model's price, realised settlement amounts. Never invent them; with none, the section says none were supplied;
    - the **data sources** of each market input and of the fixings;
-   - their own **report template** or format, if they have one (a Word / PDF / Markdown document, or a list of
-     sections). Without one, use the SR 11-7 default. See "Templates".
+   - their own **report template** or format (a Word / PDF / Markdown document, or a list of sections). Without
+     one, use `templates/sr11-7.md`.
 3. **Design the tests** in a report config (below): pick benchmarks and limiting cases that test *this* product's
    risk drivers, not generic ones. Keep the trade's own seed.
 4. **Run evidence.** Read `attention`. Investigate every WARN / FAIL before writing about it: re-run with more
    paths, `price.py inspect`, check the market data. A FAIL in a case you designed may be a wrong expectation;
-   fix the config only if the expectation was wrong, and say so in the commentary. Never loosen a tolerance to
-   turn a FAIL into a PASS without saying why.
-5. **Write the narrative** (rules below), then **render**, and repeat until `ok: true`. Tell the user which
-   `manual_placeholders` remain for their organisation to fill, and any `evidence_not_in_template`.
-6. **Deliver** `report.md`: the price with its CI, the test counts, every WARN / FAIL in one line each, and what
-   the narrative concludes. Offer once to turn it into another format (Word, PDF, a shareable page) with the
-   tools available; the Markdown stays the source.
+   fix the config only if the expectation was wrong, and say so in the report. Never loosen a tolerance to turn a
+   FAIL into a PASS without saying why.
+5. **Write `DIR/report.md`** from `materials.md` and the template (rules below). A user's template in .docx or
+   .pdf is read with the matching skill. Keep its headings, order and fixed wording. If it has no place for a WARN /
+   FAIL or a core result (sensitivities, stress, convergence), ask the user where it goes rather than dropping it.
+6. **Deliver**: the price with its CI, the test counts, every WARN / FAIL in one line each, the conclusion, and any
+   sections left for the organisation. Offer once to convert the report to the user's format (Word, PDF, a
+   shareable page) with the tools available.
 
-## Templates
+## Writing the report
 
-A template is Markdown: the user's headings, order and fixed wording, with tags where content goes. List the tags
-and blocks with `report.py blocks`.
-
-| tag | becomes |
-|---|---|
-| `{{block:NAME}}` | an evidence table or list (`key_results`, `test_summary`, `components`, `engine_method`, `calibration`, `model_diagnostics`, `market_data`, `input_files`, `limitations`, `run_warnings`, `implementation`, `convergence`, `sensitivity`, `stress`, `benchmarking`, `outcomes`, `cases`, `findings`, `trade_spec`, `cashflows`, `environment`, `header`, `mock_warning`) |
-| `{{narrative:KEY "guidance"}}` | text written under `KEY` in `narrative.yaml`; required. Guidance defaults to the heading above |
-| `{{commentary:SECTION "guidance"}}` | comment on an evidence section (`implementation`, `convergence`, `sensitivity`, `stress`, `benchmarking`, `outcomes`, `cases`, `methodology`); required when a test there is WARN / FAIL |
-| `{{manual:KEY "guidance"}}` | organisation-supplied content (approvals, ownership, tiering, policy references); from `narrative.yaml` `manual:` if the user gave it, else a visible placeholder |
-| `{{path\|format}}` | one value from `evidence.json`, e.g. `{{key.price\|,.2f}}` |
-
-**Turning a user's format into a template.** Read their document (a .docx or .pdf with the matching skill,
-Markdown or plain text directly), then write `report_template.md` beside the report folder:
-
-1. Keep their section titles, numbering, order and boilerplate wording verbatim.
-2. For each section decide what fills it: an evidence block when the section reports results (a "Sensitivity" or
-   "Testing" section gets `{{block:sensitivity}}`, a "Model inputs" section `{{block:market_data}}`), a narrative
-   slot when it asks for explanation, `{{manual:...}}` when only the organisation can write it (governance,
-   approvals, ratings, sign-offs, distribution lists). Put the section's own instructions into the tag's guidance.
-3. Add `{{commentary:...}}` next to each evidence block, so a WARN / FAIL has a place to be discussed; `render`
-   insists on commentary for every WARN / FAIL section even without a slot.
-4. Tests their template does not ask for still run. `render` lists core evidence the template leaves out
-   (`evidence_not_in_template`). Ask the user whether to add it, e.g. as an appendix; do not drop a WARN / FAIL
-   silently. A mock-data warning is added at the top whenever the data is mock, whatever the template says.
-5. Show the user the mapping (their section -> block / narrative / manual) in a short table before writing the
-   narrative, and adjust if they disagree.
-
-Then `report.py narrative DIR --template report_template.md`. If the user wants the result in their original file
-format, convert the rendered Markdown with the matching skill (e.g. docx) and their document's styles; the Markdown
-remains the source.
+- **Numbers are copied exactly from `materials.md`** (or `evidence.json`): same digits, same rounding or coarser,
+  never recomputed, never estimated. A number not in the materials is not in the report, except term-sheet facts
+  (notional, dates, barrier levels) and inputs the user gave. A derived figure the report needs (e.g. a change in
+  %) must already be in the materials; if it is not, rerun `evidence` with a config that produces it.
+- **Tables**: reuse the materials' tables where the template asks for results; trim columns if needed, but do not
+  change values.
+- **Say what the evidence says.** A WARN or FAIL is reported as such, with its cause if found and its impact on the
+  price. Do not describe a test as passed that was not run (e.g. the unit tests without `--run-tests`).
+- **Mock data**: if the materials say the market data is mock, say so at the top and in the conclusion; the
+  numbers are illustrative only.
+- **Limitations**: the engine-derived list plus product-specific ones: e.g. coupon-on-memory wording, settlement
+  lags not modelled, issuer credit not in the discount curve, no funding / XVA, observation-date conventions. Give
+  the direction of the bias where known.
+- **Methodology** explains *why* the model fits the product's risk drivers (e.g. local vol reprices the smile the KI
+  put depends on; one-factor HW is adequate for a callable fixed-rate bond but not for a CMS spread), and the
+  alternatives considered (refer to the benchmarks).
+- **Sensitivities**: a spot bump is sticky-moneyness for a vol surface with `strike_mode: relative`, sticky-strike
+  for `absolute`; say which. Call a sensitivity not significant when the materials say so, rather than
+  interpreting noise.
+- **Ongoing monitoring**: what to rerun and when (each valuation: `price.py price`; after an engine change:
+  `baseline.py verify` of an export; periodically: this report), what triggers review (FAIL, references out of
+  tolerance, calibration misses, the market moving to where stresses showed large losses).
+- **Conclusion**: fitness for the stated purpose and any conditions (e.g. "use with at least 50,000 paths").
+- **Findings**: id, description, impact, recommendation; neutral and specific; "none" when there are none.
+- **Check before delivering**: reread the report against `materials.md`; every number must appear there.
 
 ## Report config
 
@@ -153,12 +138,12 @@ The market is inlined into the trade before the variants run, so `set` can chang
 
 ## Tests and their SR 11-7 role
 
-Section numbers below are the default template's.
+Section numbers below are the default template's; `materials.md` has one section per row.
 
 | Report section | SR 11-7 element | Evidence (`tests.` key) | Status rule |
 |---|---|---|---|
 | 4 Methodology | conceptual soundness | method, model, graph, `implementation.calibration` | WARN if a calibration instrument misses its vol by > 5% |
-| 6 Assumptions and limitations | limitations | `known_limitations` (from model and method) + narrative | - |
+| 6 Assumptions and limitations | limitations | `known_limitations` (from model and method) + product-specific ones you add | - |
 | 7 Implementation | process verification | `implementation`: validation, reproducibility (same seed twice), martingale check, zero bump, exercise policy in/out of sample; `unit_tests` | FAIL if not reproducible, martingale \|z\| >= 4, a zero bump or pinning the reference levels moves the price, a test fails; WARN on validation warnings or an exercise-policy gap > 4 SE |
 | 8 Convergence | conceptual soundness (numerical) | `convergence`, `seed_stability`, `precision` | WARN if a level is > 4 SE from the largest, the std-error slope is outside -0.65..-0.35, or seed dispersion / SE is outside its 99% band |
 | 9 Sensitivity | sensitivity analysis | `sensitivities`: P+, P-, first / second order with their SE (common random numbers), delta / gamma per unit | INFO; FAIL if a bump cannot be priced. `significant: no` = within 2 SE of zero |
@@ -166,13 +151,11 @@ Section numbers below are the default template's.
 | 11 Benchmarking | benchmarking | engine closed-form cross-check, `benchmarks` | per `expect`; cross-check FAIL beyond 4 SE |
 | 12 Outcomes | outcomes analysis | `references` | per tolerance, else INFO |
 | 13 Limiting cases | conceptual soundness (testing) | `cases` | per `expect` |
-| 14 Ongoing monitoring | ongoing monitoring | narrative + reproduction note | - |
+| 14 Ongoing monitoring | ongoing monitoring | your text + the reproduction note | - |
 
 Spot bumps and stresses keep the trade's **initial fixings fixed**: `evidence` pins `trade.reference_levels` to the
 values the base run used, so relative strikes and barriers stay where they are (otherwise a new trade's levels
 would move with spot and delta would be zero). The zero-bump check confirms the pinned trade prices as the original.
-A vol surface with `strike_mode: relative` is sticky-moneyness under a spot bump, `absolute` sticky-strike; say
-which in the sensitivity commentary.
 
 Sensitivities are bump-and-revalue on the same seed and paths. Under Monte Carlo, discontinuous payoffs (digital
 coupons, discrete barriers, autocalls) make spot and vol differences noisy: read the `SE` column, and if a key
@@ -199,48 +182,6 @@ Build an equivalence case as a separate trade file next to the config (start fro
 feature) and compare with `approx`. For a relation (callable <= straight), use `le` / `ge`. State the expected
 direction from the **holder's** view, as the engine signs prices.
 
-## Writing the narrative
-
-`narrative.yaml` keys: `executive_summary`, `purpose_and_use`, `product_description`, `methodology`, `data`,
-`assumptions_limitations`, `ongoing_monitoring`, `conclusion` (all required), `findings` (a list; write `[]` for none: left empty, the report is incomplete),
-`commentary.<section>` (`implementation`, `convergence`, `sensitivity`, `stress`, `benchmarking`, `outcomes`,
-`cases`, `methodology`), required for a section with a WARN or FAIL test and recommended where a reader needs
-interpretation. A user template has its own keys (whatever its `{{narrative:...}}` tags name) and `manual:` entries.
-Markdown is allowed inside a block.
-
-- **Numbers come from evidence, through tokens**: `{{key.price|,.2f}}`, `{{key.ci_low|,.0f}}`,
-  `{{tests.seed_stability.ratio|.2f}}`, `{{tests.sensitivities.rows.1.first_order|,.0f}}`,
-  `{{base.events.autocall.first_termination_probability|.1%}}`, `{{tests.stress.rows.0.change_pct|.1%}}`. The
-  path follows `evidence.json`; the format is a Python format spec. Typing a computed number by hand is not
-  allowed; term-sheet facts (notional, dates, barrier levels) may be written directly.
-- **Say what the evidence says.** A WARN or FAIL is reported as such, with its cause if found and its impact on
-  the price. Do not describe a test as passed that was not run (e.g. the unit tests without `--run-tests`).
-- **Mock data**: if `key.mock_market_data` is true, the executive summary and conclusion say the numbers are
-  illustrative only.
-- **Limitations**: add the product-specific ones to the engine-derived list (which the report already shows; do not
-  repeat it): e.g. coupon-on-memory wording, settlement lags not modelled, issuer credit not in the discount curve,
-  no funding / XVA, observation-date conventions. Give the direction of the bias where known.
-- **Methodology** explains *why* the model fits the product's risk drivers (e.g. local vol reprices the smile the
-  KI put depends on; one-factor HW is adequate for a callable fixed-rate bond but not for a CMS spread), and the
-  alternatives considered (refer to the benchmarks).
-- **Ongoing monitoring**: what to rerun and when (each valuation: `price.py price`; after an engine change:
-  `baseline.py verify` of an export; periodically: this report), what triggers review (FAIL, references out of
-  tolerance, calibration misses, the market moving to where stresses showed large losses).
-- **Conclusion**: fitness for the stated purpose and any conditions (e.g. "use with at least 50,000 paths"). No
-  approval, rating or sign-off: that is governance.
-- **Findings**: `{id, title, description, impact, recommendation}`, neutral and specific.
-
-## Reading `evidence.json`
-
-| key | content |
-|---|---|
-| `key` | headline numbers: price, std_error, ci_low / ci_high, method, model, num_paths, seed, mock_market_data |
-| `summary`, `status_counts` | every test with section, status, one-line detail |
-| `base` | the full pricing result (`price.py price` output) |
-| `plan` | `price.py plan` output: method, graph, simulation dates |
-| `input` | the trade as priced (overrides applied, reference levels pinned, market file named) |
-| `market` | summary of curves, equities, swaption vols |
-| `known_limitations` | engine-derived limitations for this model and method |
-| `tests.*` | the evidence of each section, as in the table above |
-| `files` | every input file with its SHA-256 |
-| `environment` | Python, library versions, engine code hash, git commit / export version |
+`evidence.json` has the same results unrounded: `key` (headline numbers), `summary` / `status_counts` (every
+test), `base` (the full pricing result), `plan`, `input` (the trade as priced), `market`, `known_limitations`,
+`tests.*`, `files` (inputs with SHA-256) and `environment`.

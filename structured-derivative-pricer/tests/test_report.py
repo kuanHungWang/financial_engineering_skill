@@ -1,5 +1,5 @@
-"""Validation report: the evidence is produced by engine runs only (bumps, stresses, benchmarks, cases), every status
-follows its rule, and the rendered report fills numbers from the evidence and flags what a person still has to write."""
+"""Validation report material: the evidence is produced by engine runs only (bumps, stresses, benchmarks, cases),
+every status follows its rule, and materials.md shows the same numbers as evidence.json."""
 from __future__ import annotations
 
 import importlib.util
@@ -125,89 +125,6 @@ def test_evidence_rejects_bad_config(tmp_path, capsys):
     assert _main(["evidence", cfg, "--out-dir", tmp_path / "ev"], capsys)[0] == 2
 
 
-# ------------------------------------------------------------------ narrative and render
-def test_render_fills_tokens_and_flags_gaps(tmp_path, capsys):
-    cfg = _config(tmp_path, EX / "vanilla_call.yaml", stress=[])
-    d = tmp_path / "ev"
-    assert _main(["evidence", cfg, "--out-dir", d], capsys)[0] == 0
-    code, out = _main(["narrative", d], capsys)
-    assert code == 0 and (d / "narrative.yaml").exists()
-    assert _main(["narrative", d], capsys)[0] == 2                                  # never overwritten
-
-    code, out = _main(["render", d], capsys)                                        # skeleton: all missing
-    assert code == 1 and "executive_summary" in out["missing_narrative"]
-    assert "[TO BE COMPLETED" in (d / "report.md").read_text()
-
-    ev = json.loads((d / "evidence.json").read_text())
-    nar = {k: f"Text for {k}." for k in report.SECTIONS}
-    nar["executive_summary"] = "Price {{key.price|,.2f}}, model {{key.model}}, bad {{key.nope}}."
-    nar["findings"] = []
-    (d / "narrative.yaml").write_text(yaml.safe_dump(nar))
-    code, out = _main(["render", d], capsys)
-    assert code == 1 and out["missing_narrative"] == [] and out["unresolved_tokens"][0]["token"] == "{{key.nope}}"
-    text = (d / "report.md").read_text()
-    assert f"Price {ev['key']['price']:,.2f}, model black_scholes" in text and "No findings." in text
-
-    nar["executive_summary"] = "Price {{key.price|,.2f}}."
-    (d / "narrative.yaml").write_text(yaml.safe_dump(nar))
-    code, out = _main(["render", d, "--out", tmp_path / "r.md"], capsys)
-    assert code == 0 and out["ok"]
-    text = (tmp_path / "r.md").read_text()
-    for heading in ("Executive summary", "Sensitivity analysis", "Stress testing", "Benchmarking",
-                    "Outcomes analysis", "Ongoing monitoring", "Appendix A"):
-        assert heading in text
-    assert "Governance, policies and controls are out of scope" in text
-
-
-def test_warn_requires_commentary(tmp_path, capsys):
-    cfg = _config(tmp_path, EX / "callable_fixed_rate_bond_calibrated.yaml", set=["pricing.num_paths=2000"],
-                  convergence={"paths": [1000, 2000]}, seeds={"count": 0}, stress=[])
-    d = tmp_path / "ev"
-    code, out = _main(["evidence", cfg, "--out-dir", d], capsys)
-    assert code == 0 and any(x["test"] == "Calibration fit" and x["status"] == "WARN" for x in out["attention"])
-    nar = {k: "x" for k in report.SECTIONS} | {"findings": []}
-    (d / "narrative.yaml").write_text(yaml.safe_dump(nar))
-    code, out = _main(["render", d], capsys)
-    assert code == 1 and out["missing_narrative"] == ["commentary.methodology"]
-    nar["commentary"] = {"methodology": "The short-expiry hump cannot be fitted by a constant sigma."}
-    (d / "narrative.yaml").write_text(yaml.safe_dump(nar))
-    assert _main(["render", d], capsys)[0] == 0
-
-
-def test_user_template(tmp_path, capsys):
-    cfg = _config(tmp_path, EX / "callable_fixed_rate_bond_calibrated.yaml", set=["pricing.num_paths=2000"],
-                  convergence={"paths": [1000, 2000]}, seeds={"count": 0}, stress=[])
-    d = tmp_path / "ev"
-    _main(["evidence", cfg, "--out-dir", d], capsys)
-    tpl = tmp_path / "house.md"
-    tpl.write_text("# House valuation memo {{key.trade_id}}\n\n## Background\n\n{{narrative:background}}\n\n"
-                   "## Price\n\n{{block:key_results}}\n\nPrice is {{key.price|,.0f}}.\n\n"
-                   "## Approval\n\n{{manual:approval \"Sign-off per the valuation policy\"}}\n")
-    code, out = _main(["narrative", d, "--template", tpl], capsys)
-    assert code == 0 and out["narrative_keys"] == ["background"] and out["manual_keys"] == ["approval"]
-    assert "stress" in out["evidence_not_in_template"] and (d / "template.md").read_text() == tpl.read_text()
-    assert "background:" in (d / "narrative.yaml").read_text()
-
-    (d / "narrative.yaml").write_text(yaml.safe_dump({"background": "Bond priced at {{key.price|,.2f}}."}))
-    code, out = _main(["render", d], capsys)                           # uses the saved DIR/template.md
-    # the calibration WARN must be discussed, and this template has no slot for it
-    assert code == 1 and out["missing_narrative"] == [
-        "commentary.methodology (template has no slot: add {{commentary:methodology}})"]
-    assert out["manual_placeholders"] == ["approval"] and out["template"].endswith("template.md")
-    text = (d / "report.md").read_text()
-    ev = json.loads((d / "evidence.json").read_text())
-    assert text.startswith("> **Warning:** the market data is mock")    # mock warning forced in
-    assert f"# House valuation memo {ev['key']['trade_id']}" in text and f"Price is {ev['key']['price']:,.0f}." in text
-    assert f"Bond priced at {ev['key']['price']:,.2f}." in text
-    assert "[To be provided by the organisation: Sign-off per the valuation policy]" in text
-    assert "SR 11-7" not in text
-
-    bad = tmp_path / "bad.md"
-    bad.write_text("{{block:nope}}")
-    code, out = _main(["render", d, "--template", bad], capsys)
-    assert code == 2 and "nope" in out["error"]
-
-
 # ------------------------------------------------------------------ review fixes
 def test_failed_variants_are_recorded_not_raised(tmp_path, capsys):
     """The largest path level, most seeds and a default stress may fail to price: evidence still completes."""
@@ -271,25 +188,19 @@ def test_config_set_applies_to_variant_trade_files(tmp_path, capsys):
     assert b["method"] == "mc" and b["price"] == ev["key"]["price"]             # same settings, same price
 
 
-def test_findings_and_stale_template(tmp_path, capsys):
-    cfg = _config(tmp_path, EX / "vanilla_call.yaml", stress=[])
-    d = tmp_path / "ev"
-    _main(["evidence", cfg, "--out-dir", d], capsys)
-    _main(["narrative", d], capsys)
-    nar = yaml.safe_load((d / "narrative.yaml").read_text())
-    assert "findings" in nar and nar["findings"] is None                          # an explicit choice is needed
-    nar.update({k: "x" for k in report.SECTIONS})
-    (d / "narrative.yaml").write_text(yaml.safe_dump(nar))
-    code, out = _main(["render", d], capsys)
-    assert code == 1 and out["missing_narrative"] == ["findings"]
-
-    tpl = tmp_path / "house.md"
-    tpl.write_text("# Memo\n\n{{narrative:background}}\n")
-    _main(["narrative", d, "--template", tpl, "--force"], capsys)
-    assert (d / "template.md").exists()
-    code, out = _main(["narrative", d, "--force"], capsys)                       # back to the default
-    assert not (d / "template.md").exists() and out["template"].endswith("sr11-7.md")
-    nar = {k: "x" for k in report.SECTIONS} | {"findings": []}
-    (d / "narrative.yaml").write_text(yaml.safe_dump(nar))
-    code, out = _main(["render", d], capsys)
-    assert code == 0 and out["template"].endswith("sr11-7.md")
+def test_materials_show_the_evidence(tmp_path, capsys):
+    cfg = _config(tmp_path, EX / "callable_fixed_rate_bond_calibrated.yaml", set=["pricing.num_paths=2000"],
+                  convergence={"paths": [1000, 2000]}, seeds={"count": 0},
+                  stress=[{"label": "Rates +100bp", "rate": 0.01}])
+    code, out = _main(["evidence", cfg, "--out-dir", tmp_path / "ev"], capsys)
+    assert code == 0 and out["materials"].endswith("materials.md")
+    ev = json.loads((tmp_path / "ev" / "evidence.json").read_text())
+    text = (tmp_path / "ev" / "materials.md").read_text()
+    assert text.startswith(f"# Report materials: {ev['key']['trade_id']}")
+    assert "> **Warning:** the market data is mock" in text
+    for title, _ in report.MATERIALS:
+        assert f"\n## {title}\n" in text
+    assert report._fmt(ev["key"]["price"]) in text                       # same rounding as the tables
+    assert report._fmt(ev["tests"]["stress"]["rows"][0]["change"]) in text
+    assert "| Calibration fit | methodology | **WARN** |" in text
+    assert (ROOT / "templates" / "sr11-7.md").is_file()

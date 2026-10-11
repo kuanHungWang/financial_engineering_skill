@@ -1,24 +1,18 @@
 #!/usr/bin/env python
-"""Model documentation and validation report. Default layout: SR 11-7 (governance, policies and controls excluded);
-a user's own format is given as a template.
+"""Material for a model documentation and validation report: the numbers, produced by the engine.
 
-    report.py evidence INPUT --out-dir DIR [--run-tests]   run the validation tests, write DIR/evidence.json
-    report.py narrative DIR [--template FILE]               write DIR/narrative.yaml, the sections a person writes;
-                                                            a user template is saved as DIR/template.md
-    report.py render DIR [--template FILE] [--narrative FILE] [--out FILE]
-                                                            merge template + evidence + narrative into DIR/report.md
-    report.py blocks                                        the tags and evidence blocks a template can use
+    report.py evidence INPUT --out-dir DIR [--run-tests]
 
 INPUT is a trade YAML (every test at its default) or a report config YAML that names the trade (`trade: FILE`)
-and sets the tests; see reference/model_report.md. Every number in the report comes from evidence.json, which only
-this script writes, by pricing the trade and variants of it with the engine (bump-and-revalue on the same seed,
-stress scenarios, other seeds and path counts, benchmark trades, limiting cases). The narrative holds the text a
-person must write (purpose, methodology, limitations, conclusions); it quotes numbers with {{path|format}} tokens
-that `render` fills from evidence.json, e.g. {{key.price|,.2f}}. A template (default templates/sr11-7.md) is Markdown
-that places evidence blocks and narrative slots with tags; see the tag list above BLOCKS below.
+and sets the tests; see reference/model_report.md. The script prices the trade and variants of it with the engine
+(other path counts and seeds, bump-and-revalue on the same seed, stress scenarios, benchmark trades, limiting cases)
+and writes
+    DIR/evidence.json   every result, machine-readable
+    DIR/materials.md    the same results as tables, to write the report from
+The report itself (layout from a template, default templates/sr11-7.md; text) is written from materials.md.
 
 stdout is a small JSON summary; progress goes to stderr.
-Exit codes: 0 ok, 1 a test FAILED or a run crashed (evidence) / narrative incomplete (render), 2 invalid input.
+Exit codes: 0 ok, 1 a test FAILED, 2 invalid input.
 """
 from __future__ import annotations
 
@@ -816,122 +810,6 @@ def environment() -> dict:
 
 
 
-# ------------------------------------------------------------------ templates, narrative and rendering
-# A template is Markdown with tags. The default (templates/sr11-7.md) follows SR 11-7; a user's own format is
-# written as a template with the same tags, in the user's headings and order (see reference/model_report.md).
-#   {{block:NAME}}                    a table / list generated from the evidence (BLOCKS)
-#   {{narrative:KEY "guidance"}}      text a person writes in narrative.yaml under KEY (required)
-#   {{commentary:SECTION "guidance"}} comment on an evidence section (required when a test there is WARN / FAIL)
-#   {{manual:KEY "guidance"}}         content only the organisation can supply (governance, sign-off, ...); filled
-#                                     from narrative.yaml `manual:` if given, else a visible placeholder
-#   {{path.in.evidence|format}}       one number or value from evidence.json
-DEFAULT_TEMPLATE = ROOT / "templates" / "sr11-7.md"
-GUIDANCE = {  # guidance for the default narrative keys; a template's own "guidance" wins
-    "executive_summary": "What was priced, the price with its confidence interval, the method and model, whether "
-                         "the data is mock, and the main findings and limitations in a few sentences.",
-    "purpose_and_use": "Business purpose (valuation / MTM / risk), users, the product scope the model covers, and "
-                       "uses it is NOT intended for.",
-    "product_description": "The term sheet in plain words: underlyings, dates, coupons, barriers and their "
-                           "observation, early termination, who holds which right; then how each feature maps to an "
-                           "engine component.",
-    "methodology": "Model dynamics and why they suit this product's risk drivers; numerical method and why; "
-                   "calibration choices; alternatives considered and why rejected.",
-    "data": "Source and date of each market input, fixings and their source, transformations, data quality checks, "
-            "and whether any data is mock.",
-    "assumptions_limitations": "Product-specific assumptions and limitations beyond the engine-derived list; how "
-                               "each could affect the price and any compensating measures.",
-    "ongoing_monitoring": "What to re-run and when, which results trigger a review, market conditions that stress "
-                          "the model's assumptions.",
-    "conclusion": "Whether the model is fit for the stated purpose, with which conditions. No approval or rating.",
-}
-SECTIONS = list(GUIDANCE)
-COMMENTARY = ["implementation", "convergence", "sensitivity", "stress", "benchmarking", "outcomes", "cases",
-              "methodology"]   # evidence sections (summary `section` values) that can carry commentary
-TAG = re.compile(r'\{\{\s*(block|narrative|commentary|manual):([A-Za-z0-9_]+)\s*(?:"([^"]*)"\s*)?\}\}')
-TOKEN = re.compile(r"\{\{\s*([^}|:\"]+?)\s*(?:\|\s*([^}]*?)\s*)?\}\}")
-
-
-def load_template(path: Path | None) -> tuple[str, Path]:
-    p = path or DEFAULT_TEMPLATE
-    if not p.is_file():
-        raise InputError(f"template not found: {p}")
-    text = p.read_text()
-    unknown = sorted({m.group(2) for m in TAG.finditer(text) if m.group(1) == "block"} - set(BLOCKS))
-    if unknown:
-        raise InputError(f"template {p.name}: unknown block(s) {unknown}; available: {sorted(BLOCKS)}")
-    bad = sorted({m.group(2) for m in TAG.finditer(text) if m.group(1) == "commentary"} - set(COMMENTARY))
-    if bad:
-        raise InputError(f"template {p.name}: unknown commentary section(s) {bad}; available: {COMMENTARY}")
-    return text, p
-
-
-def template_slots(text: str) -> dict:
-    """Tags in template order: {kind: {key: guidance}}; guidance defaults to the heading above the tag."""
-    slots = {"block": {}, "narrative": {}, "commentary": {}, "manual": {}}
-    for m in TAG.finditer(text):
-        kind, key, guide = m.groups()
-        if key in slots[kind]:
-            continue
-        heading = re.findall(r"^#+\s*(.+)$", text[:m.start()], re.M)
-        slots[kind][key] = guide or GUIDANCE.get(key) or (heading[-1].strip() if heading else key)
-    return slots
-
-
-def _flagged(ev) -> set:
-    return {x["section"] for x in ev["summary"] if x["status"] in ("WARN", "FAIL")}
-
-
-def narrative_template(ev: dict, template: str) -> str:
-    slots = template_slots(template)
-    flagged = _flagged(ev)
-    lines = [f"# Narrative for the model report of {ev['key']['trade_id']} (valuation {ev['key']['valuation_date']}).",
-             "# Write every narrative block. Quote numbers with tokens from evidence.json, e.g.",
-             "#   {{key.price|,.2f}}  {{key.ci_low|,.2f}}  {{tests.seed_stability.ratio|.2f}}  {{key.std_error|.3g}}",
-             "# Markdown is allowed inside each block.", ""]
-    for k, guide in slots["narrative"].items():
-        lines += [f"# {guide}", f"{k}: |", "  ", ""]
-    if "findings" in slots["block"]:
-        lines += ["# Findings: one entry per issue found; write [] for none (left empty, the report is incomplete).",
-                  "findings:",
-                  "#  - {id: F1, title: ..., description: ..., impact: ..., recommendation: ...}", ""]
-    if slots["commentary"]:
-        lines.append("# Commentary on evidence sections; REQUIRED where a test is WARN or FAIL.")
-        lines.append("commentary:")
-        for k, guide in slots["commentary"].items():
-            lines.append(f"  {k}: ''   # {guide}{'  <- REQUIRED (WARN/FAIL)' if k in flagged else ''}")
-        lines.append("")
-    if slots["manual"]:
-        lines.append("# Organisation-supplied content (governance, sign-off, ...): fill ONLY with what the user gave;")
-        lines.append("# left empty, the report shows a visible placeholder for the organisation to complete.")
-        lines.append("manual:")
-        lines += [f"  {k}: ''   # {guide}" for k, guide in slots["manual"].items()]
-    return "\n".join(lines) + "\n"
-
-
-def _lookup(ev, path):
-    x = ev
-    for seg in path.split("."):
-        if isinstance(x, list) and seg.lstrip("-").isdigit():
-            x = x[int(seg)]
-        elif isinstance(x, dict) and seg in x:
-            x = x[seg]
-        else:
-            raise KeyError(path)
-    return x
-
-
-def fill_tokens(text: str, ev: dict, bad: list) -> str:
-    def sub(m):
-        path, fmt = m.group(1), m.group(2)
-        try:
-            v = _lookup(ev, path)
-            return format(v, fmt) if fmt else _fmt(v)
-        except (KeyError, IndexError, ValueError, TypeError) as e:
-            bad.append({"token": m.group(0), "error": f"{type(e).__name__}: {e}"})
-            return f"**[UNRESOLVED {m.group(0)}]**"
-    return TOKEN.sub(sub, text)
-
-
 def _fmt(v, kind=None):
     if v is None:
         return "-"
@@ -957,8 +835,7 @@ def _table(headers, rows) -> str:
     return "\n".join(out) + "\n"
 
 
-# ------------------------------------------------------------------ evidence blocks
-def _b_header(ev, nar, bad):
+def _b_header(ev):
     k, eng = ev["key"], ev["environment"]["engine"]
     engine = (f"export {eng['export_version']}, " if eng.get("export_version") else "") + \
         f"code {eng['code_sha256']}" + (f", commit {eng['git_commit']}" if eng.get("git_commit") else "") + \
@@ -970,12 +847,12 @@ def _b_header(ev, nar, bad):
         ["Market data", "**MOCK / synthetic**" if k["mock_market_data"] else "as supplied"]])
 
 
-def _b_mock_warning(ev, nar, bad):
+def _b_mock_warning(ev):
     return ("> **Warning:** the market data is mock / synthetic. Prices and sensitivities in this report are "
             "illustrative only.\n") if ev["key"]["mock_market_data"] else ""
 
 
-def _b_key_results(ev, nar, bad):
+def _b_key_results(ev):
     k, r = ev["key"], ev["base"]
     ci = f"[{_fmt(k['ci_low'])}, {_fmt(k['ci_high'])}]" if k["ci_low"] is not None else "exact (closed form)"
     return _table(["Quantity", "Value"], [
@@ -985,7 +862,7 @@ def _b_key_results(ev, nar, bad):
         [[f"PV leg {lid}", _fmt(v)] for lid, v in (r.get("legs") or {}).items()])
 
 
-def _b_test_summary(ev, nar, bad):
+def _b_test_summary(ev):
     c = ev["status_counts"]
     return ", ".join(f"{n} {s}" for s, n in c.items() if n) + "\n\n" + _table(
         ["Test", "Section", "Status", "Detail"],
@@ -993,7 +870,7 @@ def _b_test_summary(ev, nar, bad):
           x["detail"]] for x in ev["summary"]])
 
 
-def _b_components(ev, nar, bad):
+def _b_components(ev):
     tr = ev["input"]["trade"]
     rows = [["leg", l.get("id"), l.get("type"), l.get("position", "long"),
              ", ".join(c.get("type") for c in l.get("conditions") or []) or "-"] for l in tr.get("legs", [])]
@@ -1003,7 +880,7 @@ def _b_components(ev, nar, bad):
         f"\nEffective {tr.get('effective_date', ev['key']['valuation_date'])}, maturity {tr.get('maturity')}.\n"
 
 
-def _b_engine_method(ev, nar, bad):
+def _b_engine_method(ev):
     r = ev["base"]
     out = [f"- **Method:** {r['method']}. {r.get('method_reason', '')}\n",
            f"- **Model specification:** `{json.dumps(ev['input'].get('model'), default=str)}`\n"]
@@ -1015,7 +892,7 @@ def _b_engine_method(ev, nar, bad):
     return "".join(out)
 
 
-def _b_calibration(ev, nar, bad):
+def _b_calibration(ev):
     cal = (ev["base"].get("model_diagnostics") or {}).get("calibration")
     if not cal:
         return "The model parameters are given, not calibrated.\n"
@@ -1027,12 +904,12 @@ def _b_calibration(ev, nar, bad):
     return out
 
 
-def _b_model_diagnostics(ev, nar, bad):
+def _b_model_diagnostics(ev):
     other = {n: v for n, v in (ev["base"].get("model_diagnostics") or {}).items() if n != "calibration"}
     return "".join(f"- **{n}:** `{json.dumps(v, default=str)}`\n" for n, v in other.items()) or "None.\n"
 
 
-def _b_market_data(ev, nar, bad):
+def _b_market_data(ev):
     m = ev["market"]
     rows = [[f"curve {n}", c["type"], f"{c['quotes']} quote(s)"] for n, c in m["curves"].items()]
     rows += [[f"equity {u}", f"spot {_fmt(e['spot'])}", f"vol {e['vol_type']}"
@@ -1043,22 +920,22 @@ def _b_market_data(ev, nar, bad):
     return f"Market data as of {m['as_of']}.\n\n" + _table(["Input", "Type", "Detail"], rows)
 
 
-def _b_input_files(ev, nar, bad):
+def _b_input_files(ev):
     return _table(["Role", "File", "SHA-256 (first 16)"],
                   [[role, Path(f["path"]).name, f["sha256"][:16]] for role, f in ev["files"].items()])
 
 
-def _b_limitations(ev, nar, bad):
+def _b_limitations(ev):
     return "".join(f"- {x}\n" for x in ev["known_limitations"])
 
 
-def _b_run_warnings(ev, nar, bad):
+def _b_run_warnings(ev):
     r = ev["base"]
     w = r.get("warnings", []) + r.get("notes", [])
     return "".join(f"- {x}\n" for x in w) or "None.\n"
 
 
-def _b_implementation(ev, nar, bad):
+def _b_implementation(ev):
     out = _table(["Check", "Status", "Detail"], [[x["test"], x["status"], x["detail"]] for x in ev["summary"]
                                                  if x["section"] == "implementation"])
     if not ev["tests"].get("unit_tests", {}).get("run"):
@@ -1066,7 +943,7 @@ def _b_implementation(ev, nar, bad):
     return out
 
 
-def _b_convergence(ev, nar, bad):
+def _b_convergence(ev):
     t, out = ev["tests"], []
     if "convergence" in t:
         c = t["convergence"]
@@ -1078,6 +955,9 @@ def _b_convergence(ev, nar, bad):
         s = t["seed_stability"]
         out.append("\n" + _table(["Seed", "Price", "Std error"],
                                  [[x["seed"], _fmt(x["price"]), _fmt(x["std_error"])] for x in s["rows"]]))
+        if "ratio" not in s:                # too few seeds priced for a dispersion estimate
+            out.append("\nToo few seeds priced to estimate the dispersion across seeds.\n")
+            return "".join(out)
         out.append(f"\nStandard deviation across seeds {_fmt(s['std_across_seeds'])} vs mean reported std error "
                    f"{_fmt(s['mean_reported_se'])}: ratio {_fmt(s['ratio'])} (99% band "
                    f"{_fmt(s['ratio_99pct_bounds'][0])}-{_fmt(s['ratio_99pct_bounds'][1])}).\n")
@@ -1086,7 +966,7 @@ def _b_convergence(ev, nar, bad):
     return "".join(out)
 
 
-def _b_sensitivity(ev, nar, bad):
+def _b_sensitivity(ev):
     sens = ev["tests"]["sensitivities"]
     out = f"Method: {sens['method']}.\n\n" + _table(
         ["Factor", "Bump", "Unit", "P+", "P-", "First order", "SE", "Second order", "Significant"], [
@@ -1101,7 +981,7 @@ def _b_sensitivity(ev, nar, bad):
     return out
 
 
-def _b_stress(ev, nar, bad):
+def _b_stress(ev):
     st = ev["tests"]["stress"]
     return f"{st['note']}\n\n" + _table(["Scenario", "Price", "Change", "Change %", "Std error"], [
         [x["label"], f"error: {x['error']}" if "error" in x else f"skipped: {x['skipped']}" if "skipped" in x
@@ -1109,7 +989,7 @@ def _b_stress(ev, nar, bad):
          _fmt(x.get("change_pct"), "pct"), _fmt(x.get("std_error"))] for x in st["rows"]])
 
 
-def _b_benchmarking(ev, nar, bad):
+def _b_benchmarking(ev):
     t, rows = ev["tests"], []
     cc = t["implementation"].get("cross_check")
     if cc:
@@ -1124,7 +1004,7 @@ def _b_benchmarking(ev, nar, bad):
         f"- *{x['label']}:* {x['description']}\n" for x in t["benchmarks"]["rows"] if x.get("description"))
 
 
-def _b_outcomes(ev, nar, bad):
+def _b_outcomes(ev):
     refs = ev["tests"]["references"]["rows"]
     if not refs:
         return ("No external reference prices (counterparty marks, vendor or dealer quotes, realised outcomes) were "
@@ -1134,7 +1014,7 @@ def _b_outcomes(ev, nar, bad):
                     _fmt(x["difference_pct"], "pct"), _fmt(x["tolerance"]), x["status"]] for x in refs])
 
 
-def _b_cases(ev, nar, bad):
+def _b_cases(ev):
     cs = ev["tests"]["cases"]["rows"]
     if not cs:
         return "No limiting cases were specified.\n"
@@ -1143,20 +1023,11 @@ def _b_cases(ev, nar, bad):
          x.get("expected", "-"), _fmt(x.get("difference")), _fmt(x.get("tolerance")), x["status"]] for x in cs])
 
 
-def _b_findings(ev, nar, bad):
-    f = nar.get("findings")
-    if not f:
-        return "No findings.\n" if f is not None else "> **[TO BE COMPLETED: findings (an empty list if none)]**\n"
-    return _table(["Id", "Title", "Description", "Impact", "Recommendation"], [
-        [x.get("id", "-"), x.get("title", "-")] + [fill_tokens(str(x.get(c, "-")), ev, bad)
-                                                   for c in ("description", "impact", "recommendation")] for x in f])
-
-
-def _b_trade_spec(ev, nar, bad):
+def _b_trade_spec(ev):
     return "```yaml\n" + yaml.safe_dump(ev["input"], sort_keys=False, default_flow_style=None, width=110) + "```\n"
 
 
-def _b_cashflows(ev, nar, bad):
+def _b_cashflows(ev):
     cf = ev["base"].get("expected_cashflows")
     if not cf:
         return "Not available for a closed-form price.\n"
@@ -1165,110 +1036,42 @@ def _b_cashflows(ev, nar, bad):
          _fmt(x["survival_probability"], "pct")] for x in cf])
 
 
-def _b_environment(ev, nar, bad):
+def _b_environment(ev):
     env = ev["environment"]
     return _table(["Item", "Value"], [["Python", env["python"]], ["Platform", env["platform"]]] +
                   [[p, v or "-"] for p, v in env["packages"].items()] +
                   [[f"engine {a}", b] for a, b in env["engine"].items()]) + \
-        ("\nEvery number in this report is in `evidence.json`, produced by `scripts/report.py evidence` from the "
-         "input files listed above. Re-running it with the same files and engine reproduces them exactly (fixed "
+("\nEvery number here is in `evidence.json`, produced by `scripts/report.py evidence` from the input files "
+         "listed with their SHA-256. Re-running it with the same files and engine reproduces them exactly (fixed "
          "seeds).\n")
 
 
-BLOCKS = {  # name -> (renderer, what it shows)
-    "header": (_b_header, "trade, valuation date, model / method, engine version, mock flag"),
-    "mock_warning": (_b_mock_warning, "warning when the market data is mock (added at the top if not placed)"),
-    "key_results": (_b_key_results, "price, std error, confidence interval, paths, PV per leg"),
-    "test_summary": (_b_test_summary, "every test with section, status and detail"),
-    "components": (_b_components, "legs and events of the trade as specified"),
-    "engine_method": (_b_engine_method, "pricing method and reason, model spec, simulation, computation graph"),
-    "calibration": (_b_calibration, "calibrated parameters and instrument fit"),
-    "model_diagnostics": (_b_model_diagnostics, "other model diagnostics (local-vol flooring, Heston fit, ...)"),
-    "market_data": (_b_market_data, "curves, equities, swaption vols used"),
-    "input_files": (_b_input_files, "input files with SHA-256"),
-    "limitations": (_b_limitations, "engine-derived limitations for this model and method"),
-    "run_warnings": (_b_run_warnings, "warnings and notes of the base pricing run"),
-    "implementation": (_b_implementation, "process verification checks"),
-    "convergence": (_b_convergence, "convergence in paths and seed stability"),
-    "sensitivity": (_b_sensitivity, "bump-and-revalue sensitivities with their std errors"),
-    "stress": (_b_stress, "stress scenarios"),
-    "benchmarking": (_b_benchmarking, "closed-form cross-check and benchmark models"),
-    "outcomes": (_b_outcomes, "comparison with reference prices"),
-    "cases": (_b_cases, "limiting and boundary cases"),
-    "findings": (_b_findings, "findings table from narrative.yaml `findings`"),
-    "trade_spec": (_b_trade_spec, "the trade specification as priced (YAML)"),
-    "cashflows": (_b_cashflows, "expected cashflows per date"),
-    "environment": (_b_environment, "Python, libraries, engine version, reproduction note"),
-}
-# evidence blocks a reader needs; render lists those a template leaves out
-CORE_BLOCKS = ["key_results", "test_summary", "engine_method", "market_data", "limitations", "implementation",
-               "convergence", "sensitivity", "stress", "benchmarking", "outcomes", "cases"]
+
+MATERIALS = [  # (title, block): the order of materials.md
+    ("Trade and run", _b_header), ("Key results", _b_key_results), ("Test summary", _b_test_summary),
+    ("Components as specified", _b_components), ("Engine method", _b_engine_method),
+    ("Calibration", _b_calibration), ("Model diagnostics", _b_model_diagnostics),
+    ("Market data", _b_market_data), ("Input files", _b_input_files),
+    ("Engine-derived limitations", _b_limitations), ("Warnings and notes of the pricing run", _b_run_warnings),
+    ("Implementation and process verification", _b_implementation),
+    ("Numerical convergence and stability", _b_convergence), ("Sensitivities", _b_sensitivity),
+    ("Stress scenarios", _b_stress), ("Benchmarking", _b_benchmarking), ("Outcomes analysis", _b_outcomes),
+    ("Limiting and boundary cases", _b_cases), ("Expected cashflows", _b_cashflows),
+    ("Trade specification as priced", _b_trade_spec), ("Environment and reproduction", _b_environment),
+]
 
 
-def render(ev: dict, nar: dict, template: str) -> tuple[str, dict]:
-    bad, missing, manual_open = [], [], []
-    slots = template_slots(template)
-    com, man = nar.get("commentary") or {}, nar.get("manual") or {}
-    flagged = _flagged(ev)
-
-    def sub(m):
-        kind, key, guide = m.groups()
-        guide = guide or slots[kind].get(key, key)
-        if kind == "block":
-            return BLOCKS[key][0](ev, nar, bad)
-        if kind == "narrative":
-            v = str(nar.get(key) or "").strip()
-            if not v:
-                missing.append(key)
-                return f"> **[TO BE COMPLETED: {guide}]**\n"
-            return fill_tokens(v, ev, bad) + "\n"
-        if kind == "commentary":
-            v = str(com.get(key) or "").strip()
-            if v:
-                return fill_tokens(v, ev, bad) + "\n"
-            if key in flagged:
-                missing.append(f"commentary.{key}")
-                return f"> **[TO BE COMPLETED: commentary on {key} - a test here is WARN or FAIL]**\n"
-            return ""
-        v = str(man.get(key) or "").strip()            # manual
-        if v:
-            return fill_tokens(v, ev, bad) + "\n"
-        manual_open.append(key)
-        return f"> **[To be provided by the organisation: {guide}]**\n"
-
-    # fill the template's own evidence tokens with the tags masked, then expand the tags: a narrative's tokens are
-    # filled once, by sub, and nothing a block or narrative produces is parsed again
-    tags = {str(m.start()): m for m in TAG.finditer(template)}
-    body = fill_tokens(TAG.sub(lambda m: "\0" + str(m.start()) + "\0", template), ev, bad)
-    body = re.sub("\0(\\d+)\0", lambda x: sub(tags[x.group(1)]), body)
-    body = re.sub(r"\n{3,}", "\n\n", body)
-    if "findings" in slots["block"] and nar.get("findings") is None:
-        missing.append("findings")
-    # a WARN or FAIL must be discussed somewhere, even if the template has no slot for it
-    for s in sorted(flagged - set(slots["commentary"])):
-        if s in COMMENTARY:
-            missing.append(f"commentary.{s} (template has no slot: add {{{{commentary:{s}}}}})")
-    if ev["key"]["mock_market_data"] and "mock_warning" not in slots["block"]:
-        body = _b_mock_warning(ev, nar, bad) + "\n" + body
-    return body, {"missing_narrative": missing, "unresolved_tokens": bad, "manual_placeholders": manual_open,
-                  "evidence_not_in_template": [b for b in CORE_BLOCKS if b not in slots["block"]]}
+def materials(ev: dict) -> str:
+    """Every result of evidence.json as Markdown tables, one section each, to write the report from."""
+    out = [f"# Report materials: {ev['key']['trade_id']} (valuation {ev['key']['valuation_date']})\n\n",
+           "Generated by `scripts/report.py evidence` from engine runs. Copy numbers from here exactly; "
+           "`evidence.json` holds the same results unrounded.\n\n", _b_mock_warning(ev)]
+    for title, block in MATERIALS:
+        out.append(f"\n## {title}\n\n{block(ev)}")
+    return re.sub(r"\n{3,}", "\n\n", "".join(out))
 
 
 # ------------------------------------------------------------------ CLI
-def _evidence_dir(path: str) -> Path:
-    d = Path(path)
-    if d.exists() and not d.is_dir():
-        raise InputError(f"--out-dir {d} is a file")
-    return d
-
-
-def _template_for(d: Path, given: str | None) -> tuple[str, Path]:
-    """--template, else the template saved with the narrative (DIR/template.md), else the SR 11-7 default."""
-    if given:
-        return load_template(Path(given))
-    return load_template(d / "template.md" if (d / "template.md").is_file() else None)
-
-
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = ap.add_subparsers(dest="cmd", required=True)
@@ -1276,78 +1079,25 @@ def main(argv=None):
     e.add_argument("input")
     e.add_argument("--out-dir", required=True)
     e.add_argument("--run-tests", action="store_true", help="also run the engine's test suite (about a minute)")
-    n = sub.add_parser("narrative")
-    n.add_argument("dir")
-    n.add_argument("--template", help="the user's report template (Markdown with tags); default: SR 11-7. "
-                                      "Saved as DIR/template.md for render")
-    n.add_argument("--force", action="store_true", help="overwrite an existing narrative.yaml / template.md")
-    r = sub.add_parser("render")
-    r.add_argument("dir")
-    r.add_argument("--template", help="default: DIR/template.md, else the SR 11-7 template")
-    r.add_argument("--narrative", help="default: DIR/narrative.yaml")
-    r.add_argument("--out", help="default: DIR/report.md")
-    sub.add_parser("blocks", help="list the evidence blocks and tag syntax a template can use")
     a = ap.parse_args(argv)
     try:
-        if a.cmd == "blocks":
-            _dump({"tags": {"{{block:NAME}}": "evidence table / list", "{{narrative:KEY \"guidance\"}}":
-                            "text written in narrative.yaml (required)", "{{commentary:SECTION \"guidance\"}}":
-                            f"comment on an evidence section {COMMENTARY} (required on WARN / FAIL)",
-                            "{{manual:KEY \"guidance\"}}": "organisation-supplied content; placeholder if not given",
-                            "{{path|format}}": "a value from evidence.json"},
-                   "blocks": {k: v[1] for k, v in BLOCKS.items()}, "default_template": str(DEFAULT_TEMPLATE)})
-            return 0
-        if a.cmd == "evidence":
-            out = _evidence_dir(a.out_dir)
-            cfg, doc, base, files = load_config(a.input)
-            ev = Evidence(cfg, doc, base, files, a.run_tests).build()
-            out.mkdir(parents=True, exist_ok=True)
-            (out / "evidence.json").write_text(json.dumps(ev, indent=2, default=str) + "\n")
-            fails = [x for x in ev["summary"] if x["status"] == "FAIL"]
-            _dump({"ok": not fails, "evidence": str((out / "evidence.json").resolve()), "key": ev["key"],
-                   "status_counts": ev["status_counts"],
-                   "attention": [x for x in ev["summary"] if x["status"] in ("FAIL", "WARN")]})
-            return 1 if fails else 0
-        d = Path(a.dir)
-        if not (d / "evidence.json").is_file():
-            raise InputError(f"no evidence.json in {d}; run `report.py evidence` first")
-        ev = json.loads((d / "evidence.json").read_text())
-        if a.cmd == "narrative":
-            f = d / "narrative.yaml"
-            if f.exists() and not a.force:
-                raise InputError(f"{f} exists; edit it, or pass --force to start over")
-            text, tpath = load_template(Path(a.template)) if a.template else load_template(None)
-            saved = d / "template.md"
-            if a.template:
-                if saved.exists() and not a.force and saved.read_text() != text:
-                    raise InputError(f"{saved} exists with other content; pass --force to replace it")
-                saved.write_text(text)
-            elif saved.exists() and not a.force:
-                text, tpath = load_template(saved)
-            elif saved.exists():                # --force, no --template: back to the default, for render too
-                saved.unlink()
-            f.write_text(narrative_template(ev, text))
-            slots = template_slots(text)
-            _dump({"ok": True, "narrative": str(f.resolve()), "template": str(tpath),
-                   "narrative_keys": list(slots["narrative"]), "manual_keys": list(slots["manual"]),
-                   "commentary_required": sorted(_flagged(ev) & set(COMMENTARY)),
-                   "evidence_not_in_template": [b for b in CORE_BLOCKS if b not in slots["block"]]})
-            return 0
-        template, tpath = _template_for(d, a.template)
-        nf = Path(a.narrative) if a.narrative else d / "narrative.yaml"
-        nar = yaml.safe_load(nf.read_text()) if nf.is_file() else {}
-        if not isinstance(nar, dict):
-            raise InputError(f"{nf} must be a YAML mapping")
-        text, issues = render(ev, nar, template)
-        outf = Path(a.out) if a.out else d / "report.md"
-        outf.write_text(text)
-        complete = not issues["missing_narrative"] and not issues["unresolved_tokens"]
-        _dump({"ok": complete, "report": str(outf.resolve()), "template": str(tpath),
-               "narrative": str(nf) if nf.is_file() else None, **issues, "status_counts": ev["status_counts"]})
-        return 0 if complete else 1
+        out = Path(a.out_dir)
+        if out.exists() and not out.is_dir():
+            raise InputError(f"--out-dir {out} is a file")
+        cfg, doc, base, files = load_config(a.input)
+        ev = Evidence(cfg, doc, base, files, a.run_tests).build()
+        out.mkdir(parents=True, exist_ok=True)
+        (out / "evidence.json").write_text(json.dumps(ev, indent=2, default=str) + "\n")
+        (out / "materials.md").write_text(materials(ev))
     except InputError as err:
         _dump({"ok": False, "error": str(err)})
         return 2
+    fails = [x for x in ev["summary"] if x["status"] == "FAIL"]
+    _dump({"ok": not fails, "evidence": str((out / "evidence.json").resolve()),
+           "materials": str((out / "materials.md").resolve()), "key": ev["key"],
+           "status_counts": ev["status_counts"],
+           "attention": [x for x in ev["summary"] if x["status"] in ("FAIL", "WARN")]})
+    return 1 if fails else 0
 
 
 if __name__ == "__main__":

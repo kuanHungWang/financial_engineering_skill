@@ -427,18 +427,14 @@ library versions that differ from the lock (`library_drift`).
 
 ## Validation report
 
-`report.sh` writes a model documentation and validation report structured after SR 11-7 (governance, policies and
-controls excluded): convergence, seed stability, sensitivities, stress, benchmarks, limiting cases, reference prices.
-Format and config: `reference/model_report.md`.
+`report.sh` produces the material for a model documentation and validation report: convergence, seed stability,
+sensitivities, stress, benchmarks, limiting cases, reference prices, as tables in `report/materials.md` (and
+`report/evidence.json`). Config: `reference/model_report.md`. The report is written from that material, following
+your own template or the SR 11-7 outline in `templates/sr11-7.md`.
 
 ```bash
 {name}/report.sh evidence trade.yaml --out-dir report     # or a report config naming the trade
-{name}/report.sh narrative report                         # report/narrative.yaml: the sections a person writes
-{name}/report.sh render report                            # report/report.md
 ```
-
-The default layout is `templates/sr11-7.md`. For your own format, write a Markdown template with the same tags
-(`{name}/report.sh blocks` lists them) and pass `--template my_template.md` to `narrative`.
 
 ## Writing or changing a trade
 
@@ -453,7 +449,7 @@ The default layout is `templates/sr11-7.md`. For your own format, write a Markdo
 pricer/          engine source (do not edit if you want baselines to keep reproducing)
 scripts/         price.py (CLI), baseline.py, report.py, make_mock_market.py, setup.sh
 tests/           the engine's regression suite: .venv/bin/python -m pytest tests -q
-templates/       report layouts for scripts/report.py (sr11-7.md is the default)
+templates/       report outline (sr11-7.md, the default for validation reports)
 ENGINE.json      version = hash of pricer/, scripts/price.py and the lock file; source commit; file checksums
 archive/<ver>/   earlier engine versions, kept runnable after an upgrade
 ```

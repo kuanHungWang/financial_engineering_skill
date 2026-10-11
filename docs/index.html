@@ -210,7 +210,7 @@ td:first-child { min-width: 110px; }
     <tr><td><code>structured-derivative-pricer/examples/</code></td><td>Ready-to-run trade specs, mock market data and a mock fixings file.</td></tr>
     <tr><td><code>structured-derivative-pricer/reference/</code></td><td>Detailed Markdown references (components, market data, exercise).</td></tr>
     <tr><td><code>structured-derivative-pricer/scripts/make_mock_market.py</code></td><td>Writes clearly labelled mock market data for demos and tests.</td></tr>
-    <tr><td><code>structured-derivative-pricer/scripts/report.py</code></td><td>Model documentation and validation report (SR 11-7 structure); see <a href="#report">Validation report</a>.</td></tr>
+    <tr><td><code>structured-derivative-pricer/scripts/report.py</code></td><td>Material (tests and numbers) for a model validation report; see <a href="#report">Validation report</a>.</td></tr>
   </table></div>
 </section>
 
@@ -377,15 +377,10 @@ price.py inspect  INPUT [--set k=v ...] [--node KEY ...] [--out-dir DIR] [--max-
     Governance, policies and controls are left out: they differ between organisations.
     <code>evidence</code> re-prices the trade and its variants (path convergence, seed stability, bump-and-revalue
     sensitivities on common random numbers, stress scenarios, benchmark models, limiting cases, reference prices) into
-    <code>evidence.json</code>; <code>narrative</code> writes the skeleton of the sections a person writes;
-    <code>render</code> merges both into <code>report.md</code>, filling <code>{{path|format}}</code> tokens from the
-    evidence so every number traces to an engine run. The layout is a Markdown template: the default
-    <code>templates/sr11-7.md</code>, or the user's own format with the same tags (<code>narrative --template</code>;
-    <code>report.py blocks</code> lists them). Config, templates and test criteria:
-    <code>reference/model_report.md</code>.</p>
-<pre><code class="sh">$PY scripts/report.py evidence trade.yaml --out-dir report   # or a report config naming the trade
-$PY scripts/report.py narrative report
-$PY scripts/report.py render report</code></pre>
+    <code>materials.md</code> (tables) and <code>evidence.json</code>. The report is then written from that material
+    following a template: the user's own format, or the default outline <code>templates/sr11-7.md</code>, with every
+    number copied from the material. Config, template and test criteria: <code>reference/model_report.md</code>.</p>
+<pre><code class="sh">$PY scripts/report.py evidence trade.yaml --out-dir report   # or a report config naming the trade</code></pre>
 
   <h3>Exit codes and output</h3>
   <div class="table-wrap"><table>
