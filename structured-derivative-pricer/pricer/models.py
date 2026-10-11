@@ -347,28 +347,39 @@ class BlackScholes(ModelFactory):
         )
 
 
-_HESTON_GUESS = dict(v0=0.02, kappa=0.6, theta=0.01, sigma=0.4, rho=-0.15)
+def _heston_guess(spot, quotes):
+    """Starting point read off the quotes: v0 from the nearest-to-spot vol at the shortest expiry,
+    theta from the one at the longest, a moderate skew. A guess far from the surface's variance
+    level lets Levenberg-Marquardt settle in a local minimum with theta near zero."""
+    def atm_var(tenor):
+        k, vol = min(((k, v) for t, k, v in quotes if t == tenor), key=lambda kv: abs(kv[0] - spot))
+        return vol * vol
+    tenors = [t for t, _, _ in quotes]
+    return dict(v0=atm_var(min(tenors)), kappa=1.0, theta=atm_var(max(tenors)), sigma=0.4, rho=-0.5)
 
 
 def calibrate_heston(discount, dividend, calendar, spot, quotes):
     """Fit Heston to Black vol quotes [(expiry tenor, strike, vol)] by Levenberg-Marquardt on
-    QuantLib HestonModelHelpers (relative price errors, analytic engine).
-    Returns (HestonProcess with the fitted parameters, ql.HestonModel, RMS calibration error)."""
+    QuantLib HestonModelHelpers (implied-vol errors, analytic engine). Implied-vol errors weight
+    every quote alike; relative price errors would let deep OTM short-dated wings, worth almost
+    nothing, swamp the fit.
+    Returns (HestonProcess with the fitted parameters, ql.HestonModel, RMS calibration error in
+    Black vol, worst absolute vol miss)."""
     spot_h = ql.QuoteHandle(ql.SimpleQuote(spot))
-    model = ql.HestonModel(ql.HestonProcess(discount, dividend, spot_h, *_HESTON_GUESS.values()))
+    model = ql.HestonModel(ql.HestonProcess(discount, dividend, spot_h, *_heston_guess(spot, quotes).values()))
     engine = ql.AnalyticHestonEngine(model)
     helpers = []
     for tenor, strike, vol in quotes:
         h = ql.HestonModelHelper(tenor, calendar, spot, strike, ql.QuoteHandle(ql.SimpleQuote(vol)),
-                                 discount, dividend)
+                                 discount, dividend, ql.BlackCalibrationHelper.ImpliedVolError)
         h.setPricingEngine(engine)
         helpers.append(h)
     model.calibrate(helpers, ql.LevenbergMarquardt(1e-8, 1e-8, 1e-8),
                     ql.EndCriteria(500, 300, 1e-8, 1e-8, 1e-8))
     process = ql.HestonProcess(discount, dividend, spot_h,
                                model.v0(), model.kappa(), model.theta(), model.sigma(), model.rho())
-    rmse = float(np.sqrt(np.mean([h.calibrationError() ** 2 for h in helpers])))
-    return process, model, rmse
+    errs = np.array([h.calibrationError() for h in helpers])
+    return process, model, float(np.sqrt(np.mean(errs ** 2))), float(np.abs(errs).max())
 
 
 class _HestonParams(SpecModel):
@@ -415,10 +426,11 @@ class Heston(ModelFactory):
         u = und[spec.underlying]
         diag = {}
         if spec.params is None:
-            proc, m, rmse = calibrate_heston(discount, u.dividend, u.calendar, u.spot,
+            proc, m, rmse, worst = calibrate_heston(discount, u.dividend, u.calendar, u.spot,
                                              u.vol_factory.calibration_quotes(u.vol_spec, u.spot))
             diag["calibrated_params"] = dict(v0=m.v0(), kappa=m.kappa(), theta=m.theta(), sigma=m.sigma(), rho=m.rho())
-            diag["calibration_rmse"] = rmse
+            diag["calibration_rmse"] = rmse            # Black vol units
+            diag["calibration_max_vol_error"] = worst
         else:
             p = spec.params
             proc = ql.HestonProcess(discount, u.dividend, ql.QuoteHandle(ql.SimpleQuote(u.spot)),

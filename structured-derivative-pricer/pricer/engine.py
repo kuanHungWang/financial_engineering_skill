@@ -774,6 +774,13 @@ def _run(plan: Plan, keep: dict | None = None) -> dict:
                 f"its vol (market {worst['market_vol']:.5f}, model {worst['model_vol']:.5f}). Constant-parameter "
                 "Hull-White 1F cannot fit every swaption: check that the calibration instruments are the ones that "
                 "drive the trade (coterminal for a Bermudan call), or let mean_reversion float.")
+    rmse = model.diagnostics.get("calibration_rmse")
+    if rmse is not None and not rmse <= HESTON_RMSE_TOLERANCE:
+        out["warnings"].append(
+            f"[WARNING] model: Heston calibration RMS error is {rmse:.2%} in Black vol (worst quote "
+            f"{model.diagnostics['calibration_max_vol_error']:.2%}). Five constant parameters cannot fit this "
+            "surface; prices away from the well-fitted region are unreliable. Check calibrated_params, or give "
+            "model.params fitted to the quotes that drive the trade.")
     if out.get("cross_check") and not out["cross_check"]["agrees"]:
         out["warnings"].append("[WARNING] Monte Carlo and analytic prices differ by more than 4 std errors")
     out["timings_sec"] = timings
@@ -781,6 +788,7 @@ def _run(plan: Plan, keep: dict | None = None) -> dict:
 
 
 CALIBRATION_TOLERANCE = 0.05   # worst relative vol miss of a calibration instrument before warning
+HESTON_RMSE_TOLERANCE = 0.02   # RMS Black-vol miss of a Heston fit to the surface before warning
 FIT_SEED_OFFSET = 1_000_003      # seed of the independent exercise-fit paths: pricing.seed + this
 
 

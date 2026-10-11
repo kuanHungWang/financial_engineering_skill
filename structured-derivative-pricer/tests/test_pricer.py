@@ -25,10 +25,14 @@ def load(name):
     return yaml.safe_load((EX / name).read_text())
 
 
-def price(doc):
+def run_plan(doc, keep=None):
     plan = build_plan(copy.deepcopy(doc), EX)
     assert plan.report.ok, [str(i) for i in plan.report.errors]
-    return run(plan)
+    return run(plan, keep)
+
+
+def price(doc):
+    return run_plan(doc)
 
 
 def errors(doc):
@@ -211,6 +215,35 @@ def test_heston_calibration_needs_surface():
     doc["model"] = {"type": "heston", "underlying": "SPX-FLATVOL", "discount_curve": "USD"}
     doc["trade"]["legs"][0]["underlying"] = "SPX-FLATVOL"
     assert "model.params" in errors(doc)
+
+
+def test_calibrated_heston_reprices_the_atm_1y_vol_of_the_surface():
+    """Regression: relative price errors let the near-worthless 0.6-moneyness 1M puts drive the fit
+    to theta ~ 0.002 (1Y ATM 6.8 vol points low, 31% under Black-Scholes)."""
+    doc = load("vanilla_call.yaml")
+    doc["model"]["type"] = "heston"
+    keep = {}
+    r = run_plan(doc, keep)
+    m = keep["results"]["model"]
+    u = m.underlyings["SPX"]
+    market_vol = u.vol.blackVol(1.0, u.spot)
+    h = ql.HestonModelHelper(ql.Period("1Y"), u.calendar, u.spot, u.spot,
+                             ql.QuoteHandle(ql.SimpleQuote(market_vol)), m.discount, u.dividend)
+    h.setPricingEngine(ql.AnalyticHestonEngine(ql.HestonModel(m.processes["SPX"])))
+    model_vol = h.impliedVolatility(h.modelValue(), 1e-10, 1000, 1e-3, 4.0)
+    assert abs(model_vol - market_vol) < 0.005, (model_vol, market_vol)
+    assert r["model_diagnostics"]["calibration_rmse"] < 0.015
+    assert not any("Heston calibration" in w for w in r["warnings"])
+    bs = price(load("vanilla_call.yaml"))
+    assert r["price"] == pytest.approx(bs["price"], rel=0.02)
+
+
+def test_poor_heston_fit_warns(monkeypatch):
+    from pricer import engine
+    monkeypatch.setattr(engine, "HESTON_RMSE_TOLERANCE", 1e-4)
+    doc = load("vanilla_call.yaml")
+    doc["model"]["type"] = "heston"
+    assert any("Heston calibration RMS error" in w for w in price(doc)["warnings"])
 
 
 def test_auto_method_picks_mc_for_ekiako_and_explains_why():
