@@ -1,6 +1,6 @@
 ---
 name: structured-derivative-pricer
-description: Price exotic and structured derivatives (barrier options, EKIAKO, autocallables, callable / puttable bonds, cancellable swaps, Bermudan options, equity-linked notes, fixed/floating/SOFR-compounded legs, inverse floaters, range accruals on equities, rates, CMS spreads or baskets, TARNs, kick-in coupons) by writing a declarative YAML trade spec that a pre-built QuantLib engine validates and prices by Monte Carlo, or in closed form when QuantLib has one. Use when the user gives a term sheet or product description and asks for a fair value, NPV, MTM, or pricing model, including "price this note", "value this barrier option", "build a pricing model for...", "結構型商品評價", "公平價值". You write the spec, never pricing code.
+description: Price exotic and structured derivatives (barrier options, EKIAKO, autocallables, callable / puttable bonds, cancellable swaps, Bermudan options, equity-linked notes, fixed/floating/SOFR-compounded legs, inverse floaters, range accruals on equities, rates, CMS spreads or baskets, TARNs, kick-in coupons) by writing a declarative YAML trade spec that a pre-built QuantLib engine validates and prices by Monte Carlo, or in closed form when QuantLib has one, and write model documentation / validation reports for a priced trade (SR 11-7 style). Use when the user gives a term sheet or product description and asks for a fair value, NPV, MTM, or pricing model, or asks for a model validation report, model documentation, model review or SR 11-7 report, including "price this note", "value this barrier option", "build a pricing model for...", "write the validation report", "結構型商品評價", "公平價值", "模型驗證報告". You write the spec, never pricing code.
 ---
 
 # Structured Derivative Pricer
@@ -63,9 +63,27 @@ After that, run every command below as `$PY <skill_dir>/scripts/price.py ...`.
    to tighten the error without editing the file.
 8. **Check, then report.** See "Reading the result" below.
 9. **Intermediate results, on request** (UAT, model review): `price.py inspect trade.yaml`. See below.
-10. **Offer a stand-alone copy.** After the first successful price in a project, ask the user once, without being asked:
+10. **Model documentation / validation report, on request.** See "Validation report" below.
+11. **Offer a stand-alone copy.** After the first successful price in a project, ask the user once, without being asked:
     the trade YAML alone cannot be re-priced without this skill, so offer to copy the engine into their project. See
     "Stand-alone copy" below. Do not export without a yes.
+
+## Validation report
+
+When the user asks for model documentation, a validation or model review report, or "SR 11-7", read
+[reference/model_report.md](reference/model_report.md) first. It has the workflow, the report config, the tests and
+the writing rules. In short: `scripts/report.py evidence` runs the tests (convergence, seeds, sensitivities, stress,
+benchmarks, limiting cases, reference prices) into `evidence.json`; you write `narrative.yaml` (purpose, product,
+methodology, data, limitations, monitoring, conclusion); `report.py render` merges them into `report.md`.
+The layout is the user's own template when they give one (converted to a Markdown template with tags; see
+"Templates" in the reference), otherwise the SR 11-7 default `templates/sr11-7.md`. Ask whether they have one.
+
+- Every number in the report comes from `evidence.json`; the narrative quotes them with `{{path|format}}` tokens.
+  Never type a computed number, and never compute one outside the engine.
+- Governance, policies and controls are out of scope (they differ between organisations): write no approval,
+  rating, ownership or inventory content. In a user template such sections are `{{manual:...}}` slots, filled
+  only with what the user supplies.
+- Ask for reference prices (counterparty, dealer, vendor marks) and data sources; never invent them.
 
 ## Stand-alone copy
 

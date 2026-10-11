@@ -210,6 +210,7 @@ td:first-child { min-width: 110px; }
     <tr><td><code>structured-derivative-pricer/examples/</code></td><td>Ready-to-run trade specs, mock market data and a mock fixings file.</td></tr>
     <tr><td><code>structured-derivative-pricer/reference/</code></td><td>Detailed Markdown references (components, market data, exercise).</td></tr>
     <tr><td><code>structured-derivative-pricer/scripts/make_mock_market.py</code></td><td>Writes clearly labelled mock market data for demos and tests.</td></tr>
+    <tr><td><code>structured-derivative-pricer/scripts/report.py</code></td><td>Model documentation and validation report (SR 11-7 structure); see <a href="#report">Validation report</a>.</td></tr>
   </table></div>
 </section>
 
@@ -369,6 +370,22 @@ price.py inspect  INPUT [--set k=v ...] [--node KEY ...] [--out-dir DIR] [--max-
     and regression coefficients as JSON. It also writes the observable values the legs computed, and the price node’s
     cashflows and PV per path. Stdout gets only a short manifest (files, shapes, a few summary numbers), never the data,
     so it stays small at any number of paths.</p>
+
+  <h3 id="report">Validation report (<code>report.py</code>)</h3>
+  <p><code>scripts/report.py</code> writes a model documentation and validation report for one trade, structured after
+    SR 11-7 (model development and use; validation: conceptual soundness, ongoing monitoring, outcomes analysis).
+    Governance, policies and controls are left out: they differ between organisations.
+    <code>evidence</code> re-prices the trade and its variants (path convergence, seed stability, bump-and-revalue
+    sensitivities on common random numbers, stress scenarios, benchmark models, limiting cases, reference prices) into
+    <code>evidence.json</code>; <code>narrative</code> writes the skeleton of the sections a person writes;
+    <code>render</code> merges both into <code>report.md</code>, filling <code>{{path|format}}</code> tokens from the
+    evidence so every number traces to an engine run. The layout is a Markdown template: the default
+    <code>templates/sr11-7.md</code>, or the user's own format with the same tags (<code>narrative --template</code>;
+    <code>report.py blocks</code> lists them). Config, templates and test criteria:
+    <code>reference/model_report.md</code>.</p>
+<pre><code class="sh">$PY scripts/report.py evidence trade.yaml --out-dir report   # or a report config naming the trade
+$PY scripts/report.py narrative report
+$PY scripts/report.py render report</code></pre>
 
   <h3>Exit codes and output</h3>
   <div class="table-wrap"><table>
