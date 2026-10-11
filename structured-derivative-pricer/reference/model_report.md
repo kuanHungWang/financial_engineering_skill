@@ -129,10 +129,12 @@ references:                             # outcomes analysis: prices from outside
 ```
 
 `expect` takes one of `approx`, `le`, `ge`, `lt`, `gt`, and a tolerance: `tol` (absolute) or `tol_se` (in combined
-standard errors, default 4). Inequalities get the same statistical slack. Reference prices must be in the trade's
+standard errors, default 4; at least 1e-9 relative, so two closed forms can match). Inequalities get the same
+statistical slack. Labels are unique per kind, and the whole config is checked before anything is priced. Reference prices must be in the trade's
 units (currency amount on the trade's notional, holder's sign); convert a quote in % of notional before entering it.
 
-The market is inlined into the trade before the variants run, so `set` can change market data too:
+The market file is inlined into each trade (the base and any benchmark / case trade file) before `set` is
+applied, so `set` can change market data too:
 `market_data.equities.SPX.vol={type: constant, value: 0.0001}` (near-deterministic case),
 `market_data.equities.SPX.spot=6000`.
 
@@ -142,10 +144,10 @@ Section numbers below are the default template's; `materials.md` has one section
 
 | Report section | SR 11-7 element | Evidence (`tests.` key) | Status rule |
 |---|---|---|---|
-| 4 Methodology | conceptual soundness | method, model, graph, `implementation.calibration` | WARN if a calibration instrument misses its vol by > 5% |
+| 4 Methodology | conceptual soundness | method, model, graph, `implementation.calibration` | WARN if a Hull-White instrument misses its vol by > 5% (relative), or a Heston fit's RMS vol error exceeds the engine's limit |
 | 6 Assumptions and limitations | limitations | `known_limitations` (from model and method) + product-specific ones you add | - |
 | 7 Implementation | process verification | `implementation`: validation, reproducibility (same seed twice), martingale check, zero bump, exercise policy in/out of sample; `unit_tests` | FAIL if not reproducible, martingale \|z\| >= 4, a zero bump or pinning the reference levels moves the price, a test fails; WARN on validation warnings or an exercise-policy gap > 4 SE |
-| 8 Convergence | conceptual soundness (numerical) | `convergence`, `seed_stability`, `precision` | WARN if a level is > 4 SE from the largest, the std-error slope is outside -0.65..-0.35, or seed dispersion / SE is outside its 99% band |
+| 8 Convergence | conceptual soundness (numerical) | `convergence`, `seed_stability`, `precision` | WARN if fewer than 3 levels price, a level is > 4 SE from the largest, the std-error slope is outside -0.65..-0.35, or seed dispersion / SE is outside its 99% band |
 | 9 Sensitivity | sensitivity analysis | `sensitivities`: P+, P-, first / second order with their SE (common random numbers), delta / gamma per unit | INFO; FAIL if a bump cannot be priced. `significant: no` = within 2 SE of zero |
 | 10 Stress | stress testing | `stress` | INFO; FAIL if a scenario cannot be priced. A default scenario this market cannot take (e.g. vol -5pt on a surface with a vol below 5%) is skipped |
 | 11 Benchmarking | benchmarking | engine closed-form cross-check, `benchmarks` | per `expect`; cross-check FAIL beyond 4 SE |

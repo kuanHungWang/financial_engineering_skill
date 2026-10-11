@@ -125,6 +125,71 @@ def test_evidence_rejects_bad_config(tmp_path, capsys):
     assert _main(["evidence", cfg, "--out-dir", tmp_path / "ev"], capsys)[0] == 2
 
 
+def test_config_errors_are_found_before_pricing(tmp_path, capsys, monkeypatch):
+    def no_pricing(*a, **k):
+        raise AssertionError("priced before the config was checked")
+    monkeypatch.setattr(report, "price", no_pricing)
+    cfg = _config(tmp_path, EX / "vanilla_call.yaml",
+                  cases=[{"label": "a", "set": ["trade.legs.0.strike=1.1"], "expect": {"aprox": "base"}},
+                         {"label": "a", "set": ["trade.legs.0.strike=1.2"]},
+                         {"label": "b", "set": ["trade.legs.0.strike=1.3"], "expect": {"lt": "case:later"}},
+                         {"label": "later", "set": ["trade.legs.0.strike=1.4"]}],
+                  stress=[{"label": "s", "spot": "big"}],
+                  references=[{"label": "r", "price": "n/a"}])
+    code, out = _main(["evidence", cfg, "--out-dir", tmp_path / "ev"], capsys)
+    assert code == 2
+    for msg in ("cases[0].expect", "duplicate label 'a'", "case:later", "stress[0]", "references[0]"):
+        assert msg in out["error"]
+    bad = tmp_path / "bad.yaml"
+    bad.write_text("trade: [unclosed\n")
+    code, out = _main(["evidence", bad, "--out-dir", tmp_path / "ev"], capsys)
+    assert code == 2 and "cannot read" in out["error"]                          # JSON error, not a traceback
+
+
+def test_set_reaches_market_and_strings_and_noise(tmp_path, capsys):
+    (tmp_path / "bench.yaml").write_text((EX / "vanilla_call.yaml").read_text().replace(
+        "market/mock_market.yaml", str(EX / "market" / "mock_market.yaml")))
+    cfg = _config(tmp_path, EX / "vanilla_call.yaml", set=["market_data.equities.SPX.spot=5500"],
+                  seeds={"count": 0}, stress=[],
+                  benchmarks=[{"label": "same trade from a file", "trade": "bench.yaml", "expect": {"approx": "base"}}],
+                  cases=[{"label": "same", "set": ["trade.legs.0.notional=1000000"], "expect": {"approx": "base"}}],
+                  references=[{"label": "quoted", "price": "100000", "tolerance": "1"}])
+    code, out = _main(["evidence", cfg, "--out-dir", tmp_path / "ev"], capsys)
+    ev = json.loads((tmp_path / "ev" / "evidence.json").read_text())
+    assert ev["market"]["equities"]["SPX"]["spot"] == 5500                     # set applied to the inlined market
+    status = {x["test"]: x["status"] for x in ev["summary"]}
+    assert status["Benchmark: same trade from a file"] == "PASS"               # common set reached the file too
+    assert status["Case: same"] == "PASS"                                       # closed form vs itself: no SE
+    ref = ev["tests"]["references"]["rows"][0]
+    assert ref["price"] == 100000.0 and ref["tolerance"] == 1.0 and ref["status"] == "FAIL"
+    assert report.judge({"approx": 0}, 1e-13, 0.0, {"base": (0, 0), "case": {}, "benchmark": {}})["status"] == "PASS"
+
+
+def test_two_path_levels_do_not_pass_convergence(tmp_path, capsys):
+    cfg = _config(tmp_path, EX / "autocallable_note.yaml", set=["pricing.num_paths=1000"],
+                  convergence={"paths": [500, 1000]}, seeds={"count": 0}, stress=[])
+    _main(["evidence", cfg, "--out-dir", tmp_path / "ev"], capsys)
+    ev = json.loads((tmp_path / "ev" / "evidence.json").read_text())
+    row = next(x for x in ev["summary"] if x["test"] == "Convergence in paths")
+    assert row["status"] == "WARN" and "at least 3" in row["detail"]
+    grid = [r["num_paths"] for r in json.loads((tmp_path / "ev" / "evidence.json").read_text())
+            ["tests"]["convergence"]["rows"]]
+    assert grid == [500, 1000]
+    assert sorted({max(min(1000, report.MIN_PATHS), 1000 // k) for k in (16, 8, 4, 2)} | {1000}) == \
+        [100, 125, 250, 500, 1000]                                              # the default grid keeps 5 levels
+
+
+def test_heston_calibration_is_reported(tmp_path, capsys):
+    cfg = _config(tmp_path, EX / "ekiako_put_heston.yaml", set=["pricing.num_paths=1000"],
+                  convergence={"paths": [250, 500, 1000]}, seeds={"count": 0}, stress=[])
+    _main(["evidence", cfg, "--out-dir", tmp_path / "ev"], capsys)
+    ev = json.loads((tmp_path / "ev" / "evidence.json").read_text())
+    assert ev["tests"]["implementation"]["calibration"]["model"] == "heston"
+    assert any(x["test"] == "Calibration fit" for x in ev["summary"])
+    text = (tmp_path / "ev" / "materials.md").read_text()
+    assert "Heston parameters calibrated" in text and "given, not calibrated" not in text
+
+
 # ------------------------------------------------------------------ review fixes
 def test_failed_variants_are_recorded_not_raised(tmp_path, capsys):
     """The largest path level, most seeds and a default stress may fail to price: evidence still completes."""

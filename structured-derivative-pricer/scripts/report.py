@@ -41,8 +41,10 @@ warnings.filterwarnings("ignore")
 
 from pricer import OverrideError, apply_overrides, build_plan, load_document, run  # noqa: E402
 from pricer.engine import INSPECT_FLOWS  # noqa: E402
+from pricer.models import HESTON_RMSE_TOLERANCE  # noqa: E402
 
 SCHEMA = 1
+MIN_PATHS = 100             # the engine's minimum num_paths
 Z_TOL = 4.0                 # statistical tolerance, in combined standard errors
 CALIBRATION_TOLERANCE = 0.05
 DEFAULT_BUMPS = {"spot": 0.01, "vol": 0.01, "rate": 0.0001, "dividend": 0.0001, "swaption_vol": None,
@@ -98,12 +100,42 @@ def _plain(x):
 
 
 # ------------------------------------------------------------------ loading
+def _read_yaml(path: Path):
+    try:
+        return yaml.safe_load(path.read_text())
+    except (OSError, yaml.YAMLError) as e:
+        raise InputError(f"cannot read {path}: {e}") from None
+
+
+def load_trade(path: Path, sets=()) -> tuple[dict, Path, dict]:
+    """(doc, base dir, files) with the market file inlined first, then `sets` applied, so a set can reach
+    market_data.* as well as the trade."""
+    try:
+        doc, base = load_document(str(path))
+    except (OSError, ValueError, yaml.YAMLError) as e:
+        raise InputError(f"cannot read {path}: {e}") from None
+    files = {}
+    for key in ("market_data", "fixings"):
+        if isinstance(doc.get(key), str):
+            f = (base / doc[key]).resolve()
+            if not f.is_file():
+                raise InputError(f"{key} file not found: {f}")
+            files[key] = f
+    if "market_data" in files:
+        doc["market_data"] = _read_yaml(files["market_data"])
+    try:
+        apply_overrides(doc, list(sets))
+    except OverrideError as e:
+        raise InputError(f"set {e.path} on {path.name}: {e}") from None
+    return doc, base, files
+
+
 def load_config(path: str) -> tuple[dict, dict, Path, dict]:
-    """(config, trade doc, trade base dir, input files). The doc has config `set` applied and its market inlined."""
+    """(config, trade doc, trade base dir, input files). The doc has its market inlined and config `set` applied."""
     p = Path(path)
     if not p.is_file():
         raise InputError(f"input file not found: {path}")
-    raw = yaml.safe_load(p.read_text())
+    raw = _read_yaml(p)
     if not isinstance(raw, dict):
         raise InputError("input must be a YAML mapping")
     if isinstance(raw.get("trade"), str):           # a report config naming its trade
@@ -116,32 +148,89 @@ def load_config(path: str) -> tuple[dict, dict, Path, dict]:
     cfg_dir = p.resolve().parent
     if not trade.is_file():
         raise InputError(f"trade file not found: {trade}")
-    doc, base = load_document(str(trade))
-    files = {"trade": trade}
+    check_config(cfg)
+    doc, base, extra = load_trade(trade, cfg.get("set", []))
+    files = {"trade": trade, **extra}
     if trade != p.resolve():
         files["report_config"] = p.resolve()
-    try:
-        apply_overrides(doc, cfg.get("set", []))
-    except OverrideError as e:
-        raise InputError(f"set {e.path}: {e}") from None
-    for key in ("market_data", "fixings"):
-        if isinstance(doc.get(key), str):
-            f = (base / doc[key]).resolve()
-            if not f.is_file():
-                raise InputError(f"{key} file not found: {f}")
-            files[key] = f
-    if "market_data" in files:
-        doc["market_data"] = yaml.safe_load(files["market_data"].read_text())
     for kind in ("benchmarks", "cases"):
         for item in cfg.get(kind) or []:
-            if not isinstance(item, dict) or "label" not in item:
-                raise InputError(f"every entry of {kind} needs a label")
             if item.get("trade"):
                 item["_trade_path"] = (cfg_dir / item["trade"]).resolve()
                 if not item["_trade_path"].is_file():
                     raise InputError(f"{kind} {item['label']!r}: trade file not found: {item['_trade_path']}")
                 files[f"{kind[:-1]}:{item['label']}"] = item["_trade_path"]
     return cfg, doc, base, files
+
+
+EXPECT_OPS = ("approx", "le", "ge", "lt", "gt")
+STRESS_DIMS = ("spot", "vol", "rate", "dividend", "swaption_vol", "swaption_vol_scale")
+
+
+def _number(x) -> bool:
+    return isinstance(x, (int, float)) and not isinstance(x, bool)
+
+
+def check_config(cfg: dict) -> None:
+    """Every shape error at once, before anything is priced: a typo in the last case must not cost the runs before
+    it. Labels are unique per kind; `case:` / `benchmark:` references name an earlier entry."""
+    errs, known = [], {"case": set(), "benchmark": set()}
+
+    def strings(key, v):
+        if v is not None and not (isinstance(v, list) and all(isinstance(x, str) for x in v)):
+            errs.append(f"{key}: must be a list of PATH=VALUE strings")
+
+    strings("set", cfg.get("set"))
+    for kind in ("benchmarks", "cases"):
+        for i, item in enumerate(cfg.get(kind) or []):
+            where = f"{kind}[{i}]"
+            if not isinstance(item, dict) or not isinstance(item.get("label"), str):
+                errs.append(f"{where}: needs a label")
+                continue
+            label, tag = item["label"], kind[:-1]
+            if label in known[tag]:
+                errs.append(f"{where}: duplicate label {label!r}")
+            if not item.get("trade") and not item.get("set"):
+                errs.append(f"{where} {label!r}: needs a trade file or a set list")
+            strings(f"{where}.set", item.get("set"))
+            exp = item.get("expect")
+            if exp is not None:
+                ops = [k for k in EXPECT_OPS if k in exp] if isinstance(exp, dict) else []
+                extra = set(exp) - set(EXPECT_OPS) - {"tol", "tol_se"} if isinstance(exp, dict) else set()
+                if len(ops) != 1 or extra:
+                    errs.append(f"{where}.expect: needs exactly one of {list(EXPECT_OPS)} and optionally tol or "
+                                f"tol_se; got {sorted(exp) if isinstance(exp, dict) else exp!r}")
+                else:
+                    rhs = exp[ops[0]]
+                    k, _, ref = rhs.partition(":") if isinstance(rhs, str) else ("", "", "")
+                    if not (_number(rhs) or rhs == "base" or (k in known and ref in known[k])):
+                        errs.append(f"{where}.expect: {rhs!r} must be a number, 'base', or case:LABEL / "
+                                    "benchmark:LABEL of an earlier entry")
+                    for t in ("tol", "tol_se"):
+                        if t in exp and not (_number(exp[t]) and exp[t] >= 0):
+                            errs.append(f"{where}.expect.{t}: must be a non-negative number")
+            known[tag].add(label)
+    for i, sc in enumerate(cfg.get("stress") or []):
+        if not isinstance(sc, dict) or not isinstance(sc.get("label"), str) or \
+                set(sc) - set(STRESS_DIMS) - {"label", "set"} or \
+                any(not _number(sc[d]) for d in STRESS_DIMS if d in sc):
+            errs.append(f"stress[{i}]: needs a label, numeric shocks among {list(STRESS_DIMS)}, optionally set")
+        else:
+            strings(f"stress[{i}].set", sc.get("set"))
+    for i, ref in enumerate(cfg.get("references") or []):
+        ok = isinstance(ref, dict) and isinstance(ref.get("label"), str)
+        try:
+            ok = ok and math.isfinite(float(ref["price"])) and all(
+                float(ref[t]) >= 0 for t in ("tolerance", "tolerance_pct") if ref.get(t) is not None)
+        except (KeyError, TypeError, ValueError):
+            ok = False
+        if not ok:
+            errs.append(f"references[{i}]: needs a label and a numeric price; tolerance / tolerance_pct >= 0")
+    for i, c in enumerate(cfg.get("custom_bumps") or []):
+        if not isinstance(c, dict) or not {"label", "up", "down"} <= set(c):
+            errs.append(f"custom_bumps[{i}]: needs label, up and down (lists of PATH=VALUE)")
+    if errs:
+        raise InputError("invalid report config: " + "; ".join(errs))
 
 
 # ------------------------------------------------------------------ pricing a variant
@@ -262,6 +351,7 @@ def judge(expect: dict | None, p: float, se: float, ctx: dict) -> dict:
     rv, rse = _rhs(expect[op], ctx)
     comb = math.hypot(se or 0.0, rse or 0.0)
     tol = float(expect["tol"]) if "tol" in expect else float(expect.get("tol_se", Z_TOL)) * comb
+    tol = max(tol, 1e-9 * max(1.0, abs(rv)))   # closed forms on both sides: allow floating-point noise
     diff = p - rv
     ok = {"approx": abs(diff) <= tol, "le": diff <= tol, "lt": diff < tol,
           "ge": diff >= -tol, "gt": diff > -tol}[op]
@@ -346,7 +436,8 @@ class Evidence:
             cc = r["cross_check"]
             out["cross_check"] = cc
             self.add("MC vs closed form", "benchmarking", "PASS" if cc["agrees"] else "FAIL",
-                     f"gap {cc['mc_minus_analytic']:.6g} = {cc['gap_in_std_errors']:.2f} std errors")
+                     f"gap {cc['mc_minus_analytic']:.6g}" + (f" = {cc['gap_in_std_errors']:.2f} std errors"
+                                                              if cc["gap_in_std_errors"] is not None else ""))
         for eid, ev in (r.get("events") or {}).items():
             pol = ev.get("policy") if isinstance(ev, dict) else None
             if pol and "in_sample_price" in pol and not pol.get("in_sample"):
@@ -363,6 +454,15 @@ class Evidence:
             out["calibration"] = {"worst_relative_vol_miss": worst, "instruments": len(cal["instruments"])}
             self.add("Calibration fit", "methodology", "PASS" if worst <= CALIBRATION_TOLERANCE else "WARN",
                      f"worst instrument misses its market vol by {worst:.1%} (limit {CALIBRATION_TOLERANCE:.0%})")
+        diag = r.get("model_diagnostics") or {}
+        if "calibrated_params" in diag:         # Heston: errors in Black vol units, judged as the engine does
+            rmse, worst = diag.get("calibration_rmse"), diag.get("calibration_max_vol_error")
+            out["calibration"] = {"model": "heston", "rmse_vol": rmse, "max_vol_error": worst,
+                                  "rmse_tolerance": HESTON_RMSE_TOLERANCE}
+            ok = rmse is not None and rmse <= HESTON_RMSE_TOLERANCE
+            self.add("Calibration fit", "methodology", "PASS" if ok else "WARN",
+                     f"Heston fit to the vol surface: RMS vol error {_fmt(rmse)}, worst quote {_fmt(worst)} "
+                     f"(limit RMS {HESTON_RMSE_TOLERANCE:g})")
         tol = 1e-9 * max(1.0, abs(r["price"]))
         z = price(_with_market(self.doc, bump_market(self.doc["market_data"], self.underlyings)), self.base)
         o = price(self.original, self.base)
@@ -384,7 +484,7 @@ class Evidence:
         n = r["num_paths"]
         conv = (self.cfg.get("convergence") or {}).get("paths")
         paths = sorted({int(x) for x in conv}) if conv else \
-            sorted({max(min(n, 500), n // k) for k in (16, 8, 4, 2)} | {n})
+            sorted({max(min(n, MIN_PATHS), n // k) for k in (16, 8, 4, 2)} | {n})
         if self.anti:
             paths = sorted({p + p % 2 for p in paths})
         rows = []
@@ -408,12 +508,16 @@ class Evidence:
             slope = float(np.polyfit(np.log([x["num_paths"] for x in ok_rows]),
                                      np.log([x["std_error"] for x in ok_rows]), 1)[0])
         failed = [x["num_paths"] for x in rows if x not in ok_rows]
-        ok = not failed and all(x["within_tolerance"] for x in ok_rows) and \
-            (slope is None or -0.65 <= slope <= -0.35)
+        ok = not failed and slope is not None and all(x["within_tolerance"] for x in ok_rows) and \
+            -0.65 <= slope <= -0.35
         self.tests["convergence"] = {"rows": rows, "se_slope": slope, "expected_slope": -0.5}
-        shown = "n/a (fewer than 3 levels)" if slope is None else f"{slope:.2f}"
+        if slope is None:                       # two levels cannot show a convergence rate
+            self.add("Convergence in paths", "convergence", "WARN",
+                     f"only {len(ok_rows)} path level(s) priced; at least 3 are needed to check the convergence rate"
+                     + (f"; levels that did not price: {failed}" if failed else ""))
+            return
         self.add("Convergence in paths", "convergence", "PASS" if ok else "WARN",
-                 f"std-error slope {shown} (expect -0.5); "
+                 f"std-error slope {slope:.2f} (expect -0.5); "
                  + (f"every level within {Z_TOL:g} SE of the largest" if ok else
                     f"levels that did not price: {failed}" if failed else
                     f"slope outside -0.65..-0.35 or a level more than {Z_TOL:g} SE from the largest"))
@@ -575,15 +679,11 @@ class Evidence:
     # -- benchmarking, limiting cases, outcomes
     def _variant(self, item):
         if item.get("_trade_path"):
-            d, b = load_document(str(item["_trade_path"]))
             try:                                # the config's common overrides apply to every run
-                apply_overrides(d, self.cfg.get("set", []))
-            except OverrideError as e:
-                return {"result": None, "pv": None, "seconds": 0.0,
-                        "error": f"config set {e.path} does not apply to {item['_trade_path'].name}: {e}"}
+                d, b, _ = load_trade(item["_trade_path"], self.cfg.get("set", []))
+            except InputError as e:
+                return {"result": None, "pv": None, "seconds": 0.0, "error": str(e)}
             return price(d, b, item.get("set", []))
-        if not item.get("set"):
-            raise InputError(f"{item['label']!r} needs a trade file or a set list")
         return price(self.doc, self.base, item["set"])
 
     def benchmarks(self, ctx):
@@ -633,14 +733,13 @@ class Evidence:
         r = self.b["result"]
         rows = []
         for ref in self.cfg.get("references") or []:
-            if not {"label", "price"} <= set(ref):
-                raise InputError("references entries need label and price")
-            diff = r["price"] - float(ref["price"])
-            row = {**{k: ref.get(k) for k in ("label", "price", "source", "date")}, "model_price": r["price"],
-                   "difference": diff, "difference_pct": diff / abs(ref["price"]) if ref["price"] else None}
-            tol = ref.get("tolerance")
+            rp = float(ref["price"])             # shape checked by check_config
+            diff = r["price"] - rp
+            row = {**{k: ref.get(k) for k in ("label", "source", "date")}, "price": rp, "model_price": r["price"],
+                   "difference": diff, "difference_pct": diff / abs(rp) if rp else None}
+            tol = float(ref["tolerance"]) if ref.get("tolerance") is not None else None
             if tol is None and ref.get("tolerance_pct") is not None:
-                tol = abs(float(ref["price"])) * float(ref["tolerance_pct"])
+                tol = abs(rp) * float(ref["tolerance_pct"])
             row["tolerance"] = tol
             row["status"] = "INFO" if tol is None else "PASS" if abs(diff) <= tol else "FAIL"
             rows.append(row)
@@ -892,8 +991,18 @@ def _b_engine_method(ev):
     return "".join(out)
 
 
+HESTON_DIAG = ("calibrated_params", "calibration_rmse", "calibration_max_vol_error", "calibration_end_criteria")
+
+
 def _b_calibration(ev):
-    cal = (ev["base"].get("model_diagnostics") or {}).get("calibration")
+    diag = ev["base"].get("model_diagnostics") or {}
+    if "calibrated_params" in diag:
+        return "Heston parameters calibrated to the vol surface (errors in Black vol units).\n\n" + _table(
+            ["Parameter", "Value"], [[p, _fmt(v)] for p, v in diag["calibrated_params"].items()] +
+            [["RMS vol error", _fmt(diag.get("calibration_rmse"))],
+             ["Worst quote vol error", _fmt(diag.get("calibration_max_vol_error"))],
+             ["Optimizer end criteria", _fmt(diag.get("calibration_end_criteria"))]])
+    cal = diag.get("calibration")
     if not cal:
         return "The model parameters are given, not calibrated.\n"
     out = _table(["Parameter", "Value"], [[p, _fmt(v)] for p, v in cal.items() if not isinstance(v, (list, dict))])
@@ -905,7 +1014,8 @@ def _b_calibration(ev):
 
 
 def _b_model_diagnostics(ev):
-    other = {n: v for n, v in (ev["base"].get("model_diagnostics") or {}).items() if n != "calibration"}
+    other = {n: v for n, v in (ev["base"].get("model_diagnostics") or {}).items()
+             if n != "calibration" and n not in HESTON_DIAG}
     return "".join(f"- **{n}:** `{json.dumps(v, default=str)}`\n" for n, v in other.items()) or "None.\n"
 
 
