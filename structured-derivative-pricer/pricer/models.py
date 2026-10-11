@@ -85,6 +85,7 @@ class BuiltModel:
     european_engine: object = None       # callable(underlying) -> ql.PricingEngine | None
     barrier_engine: object = None
     diagnostics: dict = field(default_factory=dict)
+    warnings: list = field(default_factory=list)  # model-specific [WARNING] lines for the result
     curves: dict = field(default_factory=dict)   # market curves by name, attached by the engine
 
     def discount_factors(self, dates) -> pd.DataFrame:
@@ -347,15 +348,26 @@ class BlackScholes(ModelFactory):
         )
 
 
-def _heston_guess(spot, quotes):
+HESTON_RMSE_TOLERANCE = 0.02   # RMS Black-vol miss of a calibrated Heston fit before warning
+_END_CRITERIA = {getattr(ql.EndCriteria, n): n for n in (
+    "MaxIterations", "StationaryPoint", "StationaryFunctionValue", "StationaryFunctionAccuracy",
+    "ZeroGradientNorm", "FunctionEpsilonTooSmall", "Unknown")}
+
+
+def _heston_guess(discount, spot, quotes):
     """Starting point read off the quotes: v0 from the nearest-to-spot vol at the shortest expiry,
     theta from the one at the longest, a moderate skew. A guess far from the surface's variance
-    level lets Levenberg-Marquardt settle in a local minimum with theta near zero."""
-    def atm_var(tenor):
-        k, vol = min(((k, v) for t, k, v in quotes if t == tenor), key=lambda kv: abs(kv[0] - spot))
+    level lets Levenberg-Marquardt settle in a local minimum with theta near zero. Expiries are
+    ordered by year fraction: ql.Period cannot compare day and month tenors (30D vs 1M)."""
+    ref, dc = discount.referenceDate(), discount.dayCounter()
+    expiry = {}
+    for t, k, v in quotes:
+        expiry.setdefault(dc.yearFraction(ref, ref + t), []).append((k, v))
+
+    def atm_var(t):
+        _, vol = min(expiry[t], key=lambda kv: abs(kv[0] - spot))
         return vol * vol
-    tenors = [t for t, _, _ in quotes]
-    return dict(v0=atm_var(min(tenors)), kappa=1.0, theta=atm_var(max(tenors)), sigma=0.4, rho=-0.5)
+    return dict(v0=atm_var(min(expiry)), kappa=1.0, theta=atm_var(max(expiry)), sigma=0.4, rho=-0.5)
 
 
 def calibrate_heston(discount, dividend, calendar, spot, quotes):
@@ -363,10 +375,11 @@ def calibrate_heston(discount, dividend, calendar, spot, quotes):
     QuantLib HestonModelHelpers (implied-vol errors, analytic engine). Implied-vol errors weight
     every quote alike; relative price errors would let deep OTM short-dated wings, worth almost
     nothing, swamp the fit.
-    Returns (HestonProcess with the fitted parameters, ql.HestonModel, RMS calibration error in
-    Black vol, worst absolute vol miss)."""
+    Returns (HestonProcess with the fitted parameters, ql.HestonModel, fit statistics: RMS and
+    worst absolute miss in Black vol, the optimizer's end criterion and whether it converged)."""
     spot_h = ql.QuoteHandle(ql.SimpleQuote(spot))
-    model = ql.HestonModel(ql.HestonProcess(discount, dividend, spot_h, *_heston_guess(spot, quotes).values()))
+    model = ql.HestonModel(ql.HestonProcess(discount, dividend, spot_h,
+                                            *_heston_guess(discount, spot, quotes).values()))
     engine = ql.AnalyticHestonEngine(model)
     helpers = []
     for tenor, strike, vol in quotes:
@@ -379,7 +392,10 @@ def calibrate_heston(discount, dividend, calendar, spot, quotes):
     process = ql.HestonProcess(discount, dividend, spot_h,
                                model.v0(), model.kappa(), model.theta(), model.sigma(), model.rho())
     errs = np.array([h.calibrationError() for h in helpers])
-    return process, model, float(np.sqrt(np.mean(errs ** 2))), float(np.abs(errs).max())
+    end = model.endCriteria()
+    fit = dict(rmse=float(np.sqrt(np.mean(errs ** 2))), max_vol_error=float(np.abs(errs).max()),
+               end_criteria=_END_CRITERIA.get(end, str(end)), converged=bool(ql.EndCriteria.succeeded(end)))
+    return process, model, fit
 
 
 class _HestonParams(SpecModel):
@@ -424,13 +440,25 @@ class Heston(ModelFactory):
     @staticmethod
     def build(spec, valuation_date, discount, und: dict[str, UnderlyingData], horizon_years=1.0):
         u = und[spec.underlying]
-        diag = {}
+        diag, warnings = {}, []
         if spec.params is None:
-            proc, m, rmse, worst = calibrate_heston(discount, u.dividend, u.calendar, u.spot,
-                                             u.vol_factory.calibration_quotes(u.vol_spec, u.spot))
+            proc, m, fit = calibrate_heston(discount, u.dividend, u.calendar, u.spot,
+                                            u.vol_factory.calibration_quotes(u.vol_spec, u.spot))
             diag["calibrated_params"] = dict(v0=m.v0(), kappa=m.kappa(), theta=m.theta(), sigma=m.sigma(), rho=m.rho())
-            diag["calibration_rmse"] = rmse            # Black vol units
-            diag["calibration_max_vol_error"] = worst
+            diag["calibration_rmse"] = fit["rmse"]                 # Black vol units
+            diag["calibration_max_vol_error"] = fit["max_vol_error"]
+            diag["calibration_end_criteria"] = fit["end_criteria"]
+            if not fit["converged"]:
+                warnings.append(
+                    f"[WARNING] model: Heston calibration stopped without converging ({fit['end_criteria']}); "
+                    f"the fitted parameters may not be a minimum (RMS miss {fit['rmse']:.2%} in Black vol). "
+                    "Check calibrated_params, or give model.params.")
+            elif not fit["rmse"] <= HESTON_RMSE_TOLERANCE:
+                warnings.append(
+                    f"[WARNING] model: Heston calibration converged but its RMS error is {fit['rmse']:.2%} in "
+                    f"Black vol (worst quote {fit['max_vol_error']:.2%}). Five constant parameters cannot fit "
+                    "this surface; prices away from the well-fitted region are unreliable. Check "
+                    "calibrated_params, or give model.params fitted to the quotes that drive the trade.")
         else:
             p = spec.params
             proc = ql.HestonProcess(discount, u.dividend, ql.QuoteHandle(ql.SimpleQuote(u.spot)),
@@ -442,5 +470,5 @@ class Heston(ModelFactory):
             processes={name: proc}, underlyings={name: u},
             joint_simulator=lambda g, t, n, s, a: {name: _simulate_process(proc, t, n, s, a)},
             european_engine=lambda _: ql.AnalyticHestonEngine(hm),
-            barrier_engine=None, diagnostics=diag,
+            barrier_engine=None, diagnostics=diag, warnings=warnings,
         )
