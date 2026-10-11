@@ -206,3 +206,90 @@ def test_user_template(tmp_path, capsys):
     bad.write_text("{{block:nope}}")
     code, out = _main(["render", d, "--template", bad], capsys)
     assert code == 2 and "nope" in out["error"]
+
+
+# ------------------------------------------------------------------ review fixes
+def test_failed_variants_are_recorded_not_raised(tmp_path, capsys):
+    """The largest path level, most seeds and a default stress may fail to price: evidence still completes."""
+    cfg = _config(tmp_path, EX / "autocallable_note.yaml", set=["pricing.num_paths=2000"],
+                  convergence={"paths": [1000, 2000, 10 ** 9]}, seeds={"count": 3},
+                  stress=[{"label": "fine", "spot": -0.1}])
+    real = report.price
+
+    def flaky(doc, base, sets=(), keep_pv=False):
+        if any(s.startswith("pricing.seed=") and not s.endswith("=8") for s in sets):
+            return {"result": None, "pv": None, "error": "boom", "seconds": 0.0}
+        return real(doc, base, sets, keep_pv)
+    report.price = flaky
+    try:
+        code, out = _main(["evidence", cfg, "--out-dir", tmp_path / "ev"], capsys)
+    finally:
+        report.price = real
+    ev = json.loads((tmp_path / "ev" / "evidence.json").read_text())
+    status = {x["test"]: x for x in ev["summary"]}
+    conv = ev["tests"]["convergence"]["rows"]
+    assert conv[-1]["price"] is None and conv[1]["diff_vs_largest"] == 0        # the reference is 2000 paths
+    assert status["Convergence in paths"]["status"] == "WARN" and "1000000000" in status["Convergence in paths"]["detail"]
+    assert status["Seed stability"]["status"] == "WARN" and "only 1 of 3" in status["Seed stability"]["detail"]
+
+
+def test_base_is_priced_with_pinned_levels(tmp_path, capsys):
+    cfg = _config(tmp_path, EX / "autocallable_note.yaml", set=["pricing.num_paths=2000"],
+                  convergence={"paths": [1000, 2000]}, seeds={"count": 0}, stress=[])
+    _main(["evidence", cfg, "--out-dir", tmp_path / "ev"], capsys)
+    ev = json.loads((tmp_path / "ev" / "evidence.json").read_text())
+    z = ev["tests"]["implementation"]["zero_bump"]
+    assert z["zero_bump_identical"] and z["unpinned_identical"] and z["unpinned_price"] == ev["key"]["price"]
+    assert ev["environment"]["engine"]["report_sha256"]
+
+
+def test_default_stress_not_applicable_is_skipped(tmp_path, capsys):
+    trade = yaml.safe_load((EX / "vanilla_call.yaml").read_text())
+    market = yaml.safe_load((EX / "market" / "mock_market.yaml").read_text())
+    market["equities"]["SPX"]["vol"] = {"type": "constant", "value": 0.04}         # vol -5pt cannot apply
+    trade["market_data"] = market
+    (tmp_path / "t.yaml").write_text(yaml.safe_dump(trade))
+    code, out = _main(["evidence", tmp_path / "t.yaml", "--out-dir", tmp_path / "ev"], capsys)
+    ev = json.loads((tmp_path / "ev" / "evidence.json").read_text())
+    row = next(x for x in ev["tests"]["stress"]["rows"] if x["label"] == "Vol -5pt")
+    assert "skipped" in row and code == 0
+    assert next(x for x in ev["summary"] if x["test"] == "Stress scenarios")["status"] == "INFO"
+    # a user scenario that cannot apply is still a failure
+    cfg = _config(tmp_path, tmp_path / "t.yaml", stress=[{"label": "too low", "vol": -0.05}])
+    assert _main(["evidence", cfg, "--out-dir", tmp_path / "ev2"], capsys)[0] == 1
+
+
+def test_config_set_applies_to_variant_trade_files(tmp_path, capsys):
+    shutil_copy = (EX / "vanilla_call.yaml").read_text().replace("market/mock_market.yaml",
+                                                                 str(EX / "market" / "mock_market.yaml"))
+    (tmp_path / "bench.yaml").write_text(shutil_copy)
+    cfg = _config(tmp_path, EX / "vanilla_call.yaml", set=["pricing.method=mc", "pricing.num_paths=3000"],
+                  seeds={"count": 0}, stress=[], benchmarks=[{"label": "file", "trade": "bench.yaml"}])
+    _main(["evidence", cfg, "--out-dir", tmp_path / "ev"], capsys)
+    ev = json.loads((tmp_path / "ev" / "evidence.json").read_text())
+    b = ev["tests"]["benchmarks"]["rows"][0]
+    assert b["method"] == "mc" and b["price"] == ev["key"]["price"]             # same settings, same price
+
+
+def test_findings_and_stale_template(tmp_path, capsys):
+    cfg = _config(tmp_path, EX / "vanilla_call.yaml", stress=[])
+    d = tmp_path / "ev"
+    _main(["evidence", cfg, "--out-dir", d], capsys)
+    _main(["narrative", d], capsys)
+    nar = yaml.safe_load((d / "narrative.yaml").read_text())
+    assert "findings" in nar and nar["findings"] is None                          # an explicit choice is needed
+    nar.update({k: "x" for k in report.SECTIONS})
+    (d / "narrative.yaml").write_text(yaml.safe_dump(nar))
+    code, out = _main(["render", d], capsys)
+    assert code == 1 and out["missing_narrative"] == ["findings"]
+
+    tpl = tmp_path / "house.md"
+    tpl.write_text("# Memo\n\n{{narrative:background}}\n")
+    _main(["narrative", d, "--template", tpl, "--force"], capsys)
+    assert (d / "template.md").exists()
+    code, out = _main(["narrative", d, "--force"], capsys)                       # back to the default
+    assert not (d / "template.md").exists() and out["template"].endswith("sr11-7.md")
+    nar = {k: "x" for k in report.SECTIONS} | {"findings": []}
+    (d / "narrative.yaml").write_text(yaml.safe_dump(nar))
+    code, out = _main(["render", d], capsys)
+    assert code == 0 and out["template"].endswith("sr11-7.md")

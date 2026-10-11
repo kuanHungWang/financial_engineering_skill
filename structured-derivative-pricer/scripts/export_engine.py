@@ -50,8 +50,8 @@ TREES = ["pricer", "reference", "examples", "tests", "templates"]   # copied who
 SCRIPTS = ["price.py", "baseline.py", "report.py", "make_mock_market.py", "setup.sh"]
 VERSIONED = ["pricer", "scripts/price.py", "requirements.txt", "requirements.lock.txt"]  # hashed into the version
 RUNNABLE = ["pricer", "scripts", "requirements.txt", "requirements.lock.txt", ".python-version", "ENGINE.json",
-            "price.sh", "baseline.sh", "report.sh"]             # what an archived engine keeps
-ENGINE_OWNED = TREES + RUNNABLE[1:] + ["README.md", ".gitignore"]
+            "price.sh", "baseline.sh", "report.sh", "templates"]  # what an archived engine keeps
+ENGINE_OWNED = list(dict.fromkeys(TREES + RUNNABLE[1:] + ["README.md", ".gitignore"]))
 IGNORE = shutil.ignore_patterns("__pycache__", "*.pyc", ".pytest_cache", "inspect_*", "test_export.py")  # the copy has no exporter
 
 

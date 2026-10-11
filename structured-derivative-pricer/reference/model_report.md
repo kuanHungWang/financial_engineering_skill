@@ -102,7 +102,7 @@ Every key but `trade` is optional. Paths are relative to the config file.
 
 ```yaml
 trade: trade_acn.yaml
-set: [pricing.num_paths=50000]          # overrides applied to every run (base and variants)
+set: [pricing.num_paths=50000]          # overrides applied to every run (base, variants, their own trade files)
 
 convergence: {paths: [2500, 5000, 10000, 20000, 50000]}   # default: N/16, N/8, N/4, N/2, N
 seeds: {count: 8}                       # seed-stability runs (seed+1 ... seed+count); 0 to skip
@@ -159,10 +159,10 @@ Section numbers below are the default template's.
 |---|---|---|---|
 | 4 Methodology | conceptual soundness | method, model, graph, `implementation.calibration` | WARN if a calibration instrument misses its vol by > 5% |
 | 6 Assumptions and limitations | limitations | `known_limitations` (from model and method) + narrative | - |
-| 7 Implementation | process verification | `implementation`: validation, reproducibility (same seed twice), martingale check, zero bump, exercise policy in/out of sample; `unit_tests` | FAIL if not reproducible, martingale \|z\| >= 4, zero bump moves the price, a test fails; WARN on validation warnings or an exercise-policy gap > 4 SE |
+| 7 Implementation | process verification | `implementation`: validation, reproducibility (same seed twice), martingale check, zero bump, exercise policy in/out of sample; `unit_tests` | FAIL if not reproducible, martingale \|z\| >= 4, a zero bump or pinning the reference levels moves the price, a test fails; WARN on validation warnings or an exercise-policy gap > 4 SE |
 | 8 Convergence | conceptual soundness (numerical) | `convergence`, `seed_stability`, `precision` | WARN if a level is > 4 SE from the largest, the std-error slope is outside -0.65..-0.35, or seed dispersion / SE is outside its 99% band |
 | 9 Sensitivity | sensitivity analysis | `sensitivities`: P+, P-, first / second order with their SE (common random numbers), delta / gamma per unit | INFO; FAIL if a bump cannot be priced. `significant: no` = within 2 SE of zero |
-| 10 Stress | stress testing | `stress` | INFO; FAIL if a scenario cannot be priced |
+| 10 Stress | stress testing | `stress` | INFO; FAIL if a scenario cannot be priced. A default scenario this market cannot take (e.g. vol -5pt on a surface with a vol below 5%) is skipped |
 | 11 Benchmarking | benchmarking | engine closed-form cross-check, `benchmarks` | per `expect`; cross-check FAIL beyond 4 SE |
 | 12 Outcomes | outcomes analysis | `references` | per tolerance, else INFO |
 | 13 Limiting cases | conceptual soundness (testing) | `cases` | per `expect` |
@@ -202,7 +202,7 @@ direction from the **holder's** view, as the engine signs prices.
 ## Writing the narrative
 
 `narrative.yaml` keys: `executive_summary`, `purpose_and_use`, `product_description`, `methodology`, `data`,
-`assumptions_limitations`, `ongoing_monitoring`, `conclusion` (all required), `findings` (a list, `[]` if none),
+`assumptions_limitations`, `ongoing_monitoring`, `conclusion` (all required), `findings` (a list; write `[]` for none: left empty, the report is incomplete),
 `commentary.<section>` (`implementation`, `convergence`, `sensitivity`, `stress`, `benchmarking`, `outcomes`,
 `cases`, `methodology`), required for a section with a WARN or FAIL test and recommended where a reader needs
 interpretation. A user template has its own keys (whatever its `{{narrative:...}}` tags name) and `manual:` entries.

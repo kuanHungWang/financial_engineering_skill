@@ -287,6 +287,19 @@ class Evidence:
         self.summary.append({"test": test, "section": section, "status": status, "detail": detail})
 
     def build(self) -> dict:
+        plan = build_plan(copy.deepcopy(self.doc), self.base)
+        if not plan.report.ok:
+            errs = "; ".join(f"{e['path']}: {e['message']}" for e in plan.report.to_dict()["errors"])
+            raise InputError(f"the trade does not validate: {errs}")
+        # pin the initial fixings before anything is priced: a relative strike or barrier must not move with a spot
+        # bump (by default it is today's spot). Every run, the base included, uses the pinned doc; the zero-bump
+        # check compares it with the trade as written.
+        self.original = copy.deepcopy(self.doc)
+        refs = dict(getattr(plan.v, "reference_levels", None) or {})
+        if refs:
+            self.doc["trade"]["reference_levels"] = {**refs, **(self.doc["trade"].get("reference_levels") or {})}
+            plan = build_plan(copy.deepcopy(self.doc), self.base)
+        self.pinned_reference_levels = refs
         _log("base price")
         b = price(self.doc, self.base, keep_pv=True)
         if b["result"] is None:
@@ -294,13 +307,6 @@ class Evidence:
         self.b, r = b, b["result"]
         self.mc = r["method"] == "mc"
         self.anti = bool(r.get("antithetic"))
-        plan = build_plan(copy.deepcopy(self.doc), self.base)
-        # pin the initial fixings: a relative strike or barrier must not move with a spot bump (by default it is
-        # today's spot); the zero-bump check below confirms the pinned trade prices as the original
-        refs = dict(getattr(plan.v, "reference_levels", None) or {})
-        if refs:
-            self.doc["trade"]["reference_levels"] = {**refs, **(self.doc["trade"].get("reference_levels") or {})}
-        self.pinned_reference_levels = refs
         self.process(plan)
         deterministic = self.mc and (r.get("std_error") or 0.0) <= 1e-9 * max(1.0, abs(r["price"]))
         if deterministic:
@@ -363,12 +369,19 @@ class Evidence:
             out["calibration"] = {"worst_relative_vol_miss": worst, "instruments": len(cal["instruments"])}
             self.add("Calibration fit", "methodology", "PASS" if worst <= CALIBRATION_TOLERANCE else "WARN",
                      f"worst instrument misses its market vol by {worst:.1%} (limit {CALIBRATION_TOLERANCE:.0%})")
+        tol = 1e-9 * max(1.0, abs(r["price"]))
         z = price(_with_market(self.doc, bump_market(self.doc["market_data"], self.underlyings)), self.base)
-        same = z["result"] is not None and abs(z["result"]["price"] - r["price"]) <= 1e-9 * max(1.0, abs(r["price"]))
-        out["zero_bump"] = {"identical": same, "pinned_reference_levels": self.pinned_reference_levels}
-        self.add("Zero bump reproduces base", "implementation", "PASS" if same else "FAIL",
-                 "unbumped market inlined, reference levels pinned: same price as base" if same else
-                 "a zero bump changes the price: sensitivities are not trustworthy")
+        o = price(self.original, self.base)
+        zero_ok = z["result"] is not None and abs(z["result"]["price"] - r["price"]) <= tol
+        pin_ok = o["result"] is not None and abs(o["result"]["price"] - r["price"]) <= tol
+        out["zero_bump"] = {"zero_bump_identical": zero_ok, "unpinned_identical": pin_ok,
+                            "unpinned_price": o["result"] and o["result"]["price"],
+                            "pinned_reference_levels": self.pinned_reference_levels}
+        self.add("Zero bump reproduces base", "implementation", "PASS" if zero_ok and pin_ok else "FAIL",
+                 "a zero bump and the trade as written (reference levels not pinned) give the base price"
+                 if zero_ok and pin_ok else
+                 ("pinning the reference levels changes the price" if zero_ok else
+                  "a zero bump changes the price") + ": sensitivities are not trustworthy")
         self.tests["implementation"] = out
 
     # -- convergence in the number of paths, and dispersion across seeds
@@ -386,23 +399,29 @@ class Evidence:
             v = r if p == n else (price(self.doc, self.base, [f"pricing.num_paths={p}"])["result"] or {})
             rows.append({"num_paths": p, "price": v.get("price"), "std_error": v.get("std_error"),
                          "confidence_interval": v.get("confidence_interval")})
-        ref = rows[-1]
         ok_rows = [x for x in rows if x["price"] is not None and x["std_error"]]
+        if not ok_rows:
+            self.tests["convergence"] = {"rows": rows, "se_slope": None, "expected_slope": -0.5}
+            self.add("Convergence in paths", "convergence", "WARN", "no path level priced")
+            return
+        ref = ok_rows[-1]                       # the largest level that priced
         for x in ok_rows:
             comb = math.hypot(x["std_error"], ref["std_error"]) if x is not ref else 0.0
-            x["diff_vs_largest"] = x["price"] - ref["price"]
+            x["diff_vs_largest"] = x["price"] - ref["price"]   # largest level that priced
             x["within_tolerance"] = x is ref or abs(x["diff_vs_largest"]) <= Z_TOL * comb
         slope = None
         if len(ok_rows) >= 3:
             slope = float(np.polyfit(np.log([x["num_paths"] for x in ok_rows]),
                                      np.log([x["std_error"] for x in ok_rows]), 1)[0])
-        ok = len(ok_rows) == len(rows) and all(x["within_tolerance"] for x in ok_rows) and \
+        failed = [x["num_paths"] for x in rows if x not in ok_rows]
+        ok = not failed and all(x["within_tolerance"] for x in ok_rows) and \
             (slope is None or -0.65 <= slope <= -0.35)
         self.tests["convergence"] = {"rows": rows, "se_slope": slope, "expected_slope": -0.5}
         shown = "n/a (fewer than 3 levels)" if slope is None else f"{slope:.2f}"
         self.add("Convergence in paths", "convergence", "PASS" if ok else "WARN",
                  f"std-error slope {shown} (expect -0.5); "
                  + (f"every level within {Z_TOL:g} SE of the largest" if ok else
+                    f"levels that did not price: {failed}" if failed else
                     f"slope outside -0.65..-0.35 or a level more than {Z_TOL:g} SE from the largest"))
 
     def seed_stability(self):
@@ -417,7 +436,11 @@ class Evidence:
             v = price(self.doc, self.base, [f"pricing.seed={s}"])["result"] or {}
             rows.append({"seed": s, "price": v.get("price"), "std_error": v.get("std_error")})
         ps = [x["price"] for x in rows if x["price"] is not None]
-        sd = float(np.std(ps, ddof=1)) if len(ps) > 1 else float("nan")
+        if len(ps) < 3:
+            self.tests["seed_stability"] = {"rows": rows}
+            self.add("Seed stability", "convergence", "WARN", f"only {len(ps)} of {k} seeds priced")
+            return
+        sd = float(np.std(ps, ddof=1))
         mse = float(np.mean([x["std_error"] for x in rows if x["std_error"]]))
         ratio = sd / mse if mse else float("nan")
         lo, hi = _chi_ratio_bounds(len(ps) - 1)
@@ -515,7 +538,8 @@ class Evidence:
     def stress(self):
         r = self.b["result"]
         scen = self.cfg.get("stress")
-        if scen is None:
+        default = scen is None
+        if default:
             scen = EQUITY_STRESS if self.underlyings else RATES_STRESS if self.model_type == "hull_white" else []
             if not self.underlyings:
                 scen = [s for s in scen if "swaption_vol_scale" not in s or self._calibrated()]
@@ -529,8 +553,8 @@ class Evidence:
             row = {"label": s["label"], "shocks": {k: s[k] for k in dims if k in s}, "set": s.get("set", [])}
             try:
                 m = bump_market(self.doc["market_data"], self.underlyings, **row["shocks"])
-            except InputError as e:
-                rows.append({**row, "error": str(e)})
+            except InputError as e:             # a default scenario this market cannot take is skipped
+                rows.append({**row, "skipped" if default else "error": str(e)})
                 continue
             v = price(_with_market(self.doc, m), self.base, row["set"])
             if v["result"] is None:
@@ -546,8 +570,10 @@ class Evidence:
                                         "swaption_vol_scale multiplies every swaption vol. Same seed as base. "
                                         "Initial fixings (reference levels) stay at their base values."}
         bad = [x["label"] for x in rows if "error" in x]
+        skip = [x["label"] for x in rows if "skipped" in x]
         self.add("Stress scenarios", "stress", "FAIL" if bad else "INFO",
-                 f"{len(rows) - len(bad)} scenario(s) priced" + (f"; failed: {bad}" if bad else ""))
+                 f"{len(rows) - len(bad) - len(skip)} scenario(s) priced" + (f"; failed: {bad}" if bad else "")
+                 + (f"; skipped (not applicable to this market): {skip}" if skip else ""))
 
     def _calibrated(self):
         return bool((self.doc.get("model") or {}).get("calibration"))
@@ -556,6 +582,11 @@ class Evidence:
     def _variant(self, item):
         if item.get("_trade_path"):
             d, b = load_document(str(item["_trade_path"]))
+            try:                                # the config's common overrides apply to every run
+                apply_overrides(d, self.cfg.get("set", []))
+            except OverrideError as e:
+                return {"result": None, "pv": None, "seconds": 0.0,
+                        "error": f"config set {e.path} does not apply to {item['_trade_path'].name}: {e}"}
             return price(d, b, item.get("set", []))
         if not item.get("set"):
             raise InputError(f"{item['label']!r} needs a trade file or a set list")
@@ -640,7 +671,8 @@ class Evidence:
     def assemble(self, plan) -> dict:
         r = self.b["result"]
         mkt = self.doc["market_data"]
-        text = self.files["market_data"].read_text() if "market_data" in self.files else json.dumps(mkt)
+        text = self.files["market_data"].read_text() if "market_data" in self.files else \
+            json.dumps(mkt, default=str)            # inline market data holds dates
         key = {"trade_id": r["trade_id"], "valuation_date": r["valuation_date"], "currency": r["currency"],
                "method": r["method"], "model": self.model_type, "price": r["price"],
                "std_error": r.get("std_error"), "confidence": r.get("confidence"),
@@ -763,6 +795,11 @@ def environment() -> dict:
     for f in sorted((ROOT / "pricer").rglob("*.py")):
         h.update(f.relative_to(ROOT).as_posix().encode() + b"\0" + f.read_bytes())
     engine = {"code_sha256": h.hexdigest()[:16]}
+    rh = hashlib.sha256()                # the tests, tolerances and layouts: judged separately from the engine
+    for f in [Path(__file__).resolve()] + sorted((ROOT / "templates").glob("*")):
+        if f.is_file():
+            rh.update(f.name.encode() + b"\0" + f.read_bytes())
+    engine["report_sha256"] = rh.hexdigest()[:16]
     try:
         engine["export_version"] = json.loads((ROOT / "ENGINE.json").read_text()).get("version")
     except (OSError, ValueError):
@@ -854,7 +891,8 @@ def narrative_template(ev: dict, template: str) -> str:
     for k, guide in slots["narrative"].items():
         lines += [f"# {guide}", f"{k}: |", "  ", ""]
     if "findings" in slots["block"]:
-        lines += ["# Findings: one entry per issue found (empty list if none).", "findings: []",
+        lines += ["# Findings: one entry per issue found; write [] for none (left empty, the report is incomplete).",
+                  "findings:",
                   "#  - {id: F1, title: ..., description: ..., impact: ..., recommendation: ...}", ""]
     if slots["commentary"]:
         lines.append("# Commentary on evidence sections; REQUIRED where a test is WARN or FAIL.")
@@ -922,8 +960,9 @@ def _table(headers, rows) -> str:
 # ------------------------------------------------------------------ evidence blocks
 def _b_header(ev, nar, bad):
     k, eng = ev["key"], ev["environment"]["engine"]
-    engine = eng.get("export_version") or f"code {eng['code_sha256']}" + \
-        (f", commit {eng['git_commit']}" if eng.get("git_commit") else "")
+    engine = (f"export {eng['export_version']}, " if eng.get("export_version") else "") + \
+        f"code {eng['code_sha256']}" + (f", commit {eng['git_commit']}" if eng.get("git_commit") else "") + \
+        f"; report script {eng.get('report_sha256', '-')}"
     return _table(["Item", "Value"], [
         ["Trade", k["trade_id"]], ["Valuation date", k["valuation_date"]], ["Currency", k["currency"]],
         ["Model / method", f"{k['model']} / {k['method']}"], ["Engine", engine],
@@ -1065,7 +1104,8 @@ def _b_sensitivity(ev, nar, bad):
 def _b_stress(ev, nar, bad):
     st = ev["tests"]["stress"]
     return f"{st['note']}\n\n" + _table(["Scenario", "Price", "Change", "Change %", "Std error"], [
-        [x["label"], _fmt(x.get("price")) if "error" not in x else f"error: {x['error']}", _fmt(x.get("change")),
+        [x["label"], f"error: {x['error']}" if "error" in x else f"skipped: {x['skipped']}" if "skipped" in x
+         else _fmt(x.get("price")), _fmt(x.get("change")),
          _fmt(x.get("change_pct"), "pct"), _fmt(x.get("std_error"))] for x in st["rows"]])
 
 
@@ -1202,7 +1242,7 @@ def render(ev: dict, nar: dict, template: str) -> tuple[str, dict]:
     body = fill_tokens(TAG.sub(lambda m: "\0" + str(m.start()) + "\0", template), ev, bad)
     body = re.sub("\0(\\d+)\0", lambda x: sub(tags[x.group(1)]), body)
     body = re.sub(r"\n{3,}", "\n\n", body)
-    if "findings" in slots["block"] and "findings" not in nar:
+    if "findings" in slots["block"] and nar.get("findings") is None:
         missing.append("findings")
     # a WARN or FAIL must be discussed somewhere, even if the template has no slot for it
     for s in sorted(flagged - set(slots["commentary"])):
@@ -1284,6 +1324,8 @@ def main(argv=None):
                 saved.write_text(text)
             elif saved.exists() and not a.force:
                 text, tpath = load_template(saved)
+            elif saved.exists():                # --force, no --template: back to the default, for render too
+                saved.unlink()
             f.write_text(narrative_template(ev, text))
             slots = template_slots(text)
             _dump({"ok": True, "narrative": str(f.resolve()), "template": str(tpath),
