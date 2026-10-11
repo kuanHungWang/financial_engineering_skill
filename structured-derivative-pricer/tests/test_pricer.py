@@ -25,10 +25,14 @@ def load(name):
     return yaml.safe_load((EX / name).read_text())
 
 
-def price(doc):
+def run_plan(doc, keep=None):
     plan = build_plan(copy.deepcopy(doc), EX)
     assert plan.report.ok, [str(i) for i in plan.report.errors]
-    return run(plan)
+    return run(plan, keep)
+
+
+def price(doc):
+    return run_plan(doc)
 
 
 def errors(doc):
@@ -211,6 +215,83 @@ def test_heston_calibration_needs_surface():
     doc["model"] = {"type": "heston", "underlying": "SPX-FLATVOL", "discount_curve": "USD"}
     doc["trade"]["legs"][0]["underlying"] = "SPX-FLATVOL"
     assert "model.params" in errors(doc)
+
+
+def _heston_doc():
+    doc = load("vanilla_call.yaml")
+    doc["model"]["type"] = "heston"
+    return doc
+
+
+def test_calibrated_heston_reprices_the_atm_1y_vol_of_the_surface():
+    """Regression: relative price errors let the near-worthless 0.6-moneyness 1M puts drive the fit
+    to theta ~ 0.002 (1Y ATM 6.8 vol points low, 31% under Black-Scholes)."""
+    keep = {}
+    r = run_plan(_heston_doc(), keep)
+    m = keep["results"]["model"]
+    u = m.underlyings["SPX"]
+    market_vol = u.vol.blackVol(1.0, u.spot)
+    h = ql.HestonModelHelper(ql.Period("1Y"), u.calendar, u.spot, u.spot,
+                             ql.QuoteHandle(ql.SimpleQuote(market_vol)), m.discount, u.dividend)
+    h.setPricingEngine(ql.AnalyticHestonEngine(ql.HestonModel(m.processes["SPX"])))
+    model_vol = h.impliedVolatility(h.modelValue(), 1e-10, 1000, 1e-3, 4.0)
+    assert abs(model_vol - market_vol) < 0.005, (model_vol, market_vol)
+    assert r["model_diagnostics"]["calibration_rmse"] < 0.015
+    assert not any("Heston calibration" in w for w in r["warnings"])
+    bs = price(load("vanilla_call.yaml"))
+    assert r["price"] == pytest.approx(bs["price"], rel=0.02)
+
+
+def test_poor_heston_fit_warns(monkeypatch):
+    from pricer import models
+    monkeypatch.setattr(models, "HESTON_RMSE_TOLERANCE", 1e-4)
+    w = price(_heston_doc())["warnings"]
+    assert any("Heston calibration converged but its RMS error" in x for x in w), w
+
+
+def test_unconverged_heston_fit_warns_and_names_the_end_criterion(monkeypatch):
+    from pricer import models
+    real = models.calibrate_heston
+
+    def capped(*a):
+        proc, m, fit = real(*a)
+        return proc, m, dict(fit, end_criteria="MaxIterations", converged=False)
+    monkeypatch.setattr(models, "calibrate_heston", capped)
+    r = price(_heston_doc())
+    assert r["model_diagnostics"]["calibration_end_criteria"] == "MaxIterations"
+    assert any("without converging (MaxIterations)" in x for x in r["warnings"]), r["warnings"]
+
+
+def test_converged_heston_fit_reports_its_end_criterion():
+    assert price(_heston_doc())["model_diagnostics"]["calibration_end_criteria"] in (
+        "StationaryPoint", "StationaryFunctionValue", "StationaryFunctionAccuracy", "ZeroGradientNorm",
+        "FunctionEpsilonTooSmall")
+
+
+_GUESS_REF = ql.Date(28, 9, 2026)
+_GUESS_CURVE = ql.YieldTermStructureHandle(ql.FlatForward(_GUESS_REF, 0.04, ql.Actual365Fixed()))
+
+
+@pytest.mark.parametrize("tenors, v0_vol, theta_vol", [
+    (["30D", "1M", "1Y"], 0.30, 0.20),     # ql.Period cannot order 30D against 1M
+    (["1Y", "30D", "1M"], 0.30, 0.20),     # order of the quotes does not matter
+    (["6M"], 0.25, 0.25),                  # one expiry: v0 = theta
+])
+def test_heston_guess_orders_expiries_by_time(tenors, v0_vol, theta_vol):
+    from pricer.models import _heston_guess
+    atm = {"30D": 0.30, "1M": 0.28, "1Y": 0.20, "6M": 0.25}
+    quotes = [(ql.Period(t), k, atm[t] + (0.05 if k != 100.0 else 0.0))
+              for t in tenors for k in (80.0, 100.0, 120.0)]
+    g = _heston_guess(_GUESS_CURVE, 100.0, quotes)
+    assert g["v0"] == pytest.approx(v0_vol ** 2) and g["theta"] == pytest.approx(theta_vol ** 2)
+
+
+def test_heston_guess_takes_the_quote_nearest_spot_on_an_absolute_strike_grid():
+    from pricer.models import _heston_guess
+    quotes = [(ql.Period("3M"), k, v) for k, v in ((4500.0, 0.24), (4980.0, 0.21), (5200.0, 0.19))]
+    quotes += [(ql.Period("2Y"), k, v) for k, v in ((4500.0, 0.23), (5050.0, 0.22), (5600.0, 0.20))]
+    g = _heston_guess(_GUESS_CURVE, 5000.0, quotes)
+    assert g["v0"] == pytest.approx(0.21 ** 2) and g["theta"] == pytest.approx(0.22 ** 2)
 
 
 def test_auto_method_picks_mc_for_ekiako_and_explains_why():

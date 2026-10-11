@@ -774,6 +774,7 @@ def _run(plan: Plan, keep: dict | None = None) -> dict:
                 f"its vol (market {worst['market_vol']:.5f}, model {worst['model_vol']:.5f}). Constant-parameter "
                 "Hull-White 1F cannot fit every swaption: check that the calibration instruments are the ones that "
                 "drive the trade (coterminal for a Bermudan call), or let mean_reversion float.")
+    out["warnings"].extend(model.warnings)
     if out.get("cross_check") and not out["cross_check"]["agrees"]:
         out["warnings"].append("[WARNING] Monte Carlo and analytic prices differ by more than 4 std errors")
     out["timings_sec"] = timings
