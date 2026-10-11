@@ -70,20 +70,25 @@ After that, run every command below as `$PY <skill_dir>/scripts/price.py ...`.
 ## Stand-alone copy
 
 `scripts/export_engine.py [DEST] --trade trade.yaml ...` copies the engine into `DEST` (default `./pricing_engine`
-in the working directory). It writes a pinned, self-contained folder: engine source, `requirements.lock.txt` with the
-exact library versions, a `README.md` for people, `price.sh` / `baseline.sh` wrappers, the docs, examples and tests,
-and `ENGINE.json` (the version is a content hash of the pricing code). Each `--trade` is priced by the copy in an
-isolated interpreter, compared to the skill's price (`matches_skill` must be true), and recorded under
-`DEST/baselines/`. The trade, market and fixings files stay where they are. `DEST/baseline.sh verify` later re-prices
-every baseline and reports `reproduced`, `inputs_changed` or `MISMATCH`.
+in the working directory). It writes a pinned, self-contained folder: engine source, `requirements.lock.txt` with
+every package (dependencies included) at its exact version, a `README.md` for people, `price.sh` / `baseline.sh`
+wrappers, the docs, examples and tests, and `ENGINE.json`. The version hashes the pricing code, the lock and the
+Python version, so a library upgrade is a new version too. The copy is built and checked in a staging folder:
+each `--trade` is priced by the copy, compared to the skill's price (`matches_skill` must be true), and recorded
+under `DEST/baselines/`. DEST is replaced only if every check passes (`dest_unchanged: true` otherwise). The trade,
+market and fixings files stay where they are. `DEST/baseline.sh verify` later re-prices every baseline and reports
+`reproduced`, `inputs_changed` or `MISMATCH`, with an `environment` block naming the cause (edited engine files,
+library drift). The checks use the skill's own Python; `--check-env` also builds the copy's locked `.venv` the way the
+user will (about a minute, needs network) and verifies with it. Offer it when the user will rely on the copy.
 
 - **Ask** in one short question after step 8. Say what it gives them (re-pricing with no AI, pinned versions,
   recorded prices to check against) and roughly how big it is (about 1 MB, plus a `.venv` built on first use). Name
   the folder you will use. Suggest keeping trades, `market/` and `fixings/` beside it.
 - **Already exported** (`DEST/ENGINE.json` exists): do not ask again. Same version: record each newly priced trade
   as a baseline (`$PY <skill_dir>/scripts/export_engine.py DEST --trade new_trade.yaml`), and say so. Different version: tell
-  the user both versions, and upgrade only on a yes with `--upgrade`. That moves the old engine to `DEST/archive/<version>/`
-  and re-verifies every baseline. Report every `MISMATCH`.
+  the user both versions, and upgrade only on a yes with `--upgrade`. That re-verifies every baseline with the new
+  engine and, if they pass, moves the old engine to `DEST/archive/<version>/`. The archive still prices and verifies
+  (`archive/<version>/baseline.sh verify --baselines DEST/baselines`). Report every `MISMATCH`.
 - Never edit files inside an export, as the hard rule for `pricer/` says. After exporting, point the user to
   `DEST/README.md` and give the re-price command.
 

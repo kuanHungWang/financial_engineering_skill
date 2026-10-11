@@ -1,22 +1,27 @@
 #!/usr/bin/env python
 """Copy this pricing engine into a project folder, so its trades can be re-priced without the skill or an AI.
 
-    export_engine.py [DEST] [--trade TRADE ...] [--set k=v ...] [--upgrade]
+    export_engine.py [DEST] [--trade TRADE ...] [--set k=v ...] [--upgrade] [--check-env]
 
 DEST (default ./pricing_engine) receives a pinned, self-contained copy:
     pricer/ scripts/ reference/ examples/ tests/   the engine, its docs, examples and test suite
-    requirements.lock.txt  .python-version         the exact library versions that produced the prices
-    ENGINE.json                                    engine version (content hash), source, file checksums
+    requirements.lock.txt  .python-version         every library (with its dependencies) at its exact version
+    ENGINE.json                                    engine version, source, file checksums
     price.sh  baseline.sh  README.md               entry points and a guide written for people
     baselines/                                     recorded prices that `baseline.sh verify` re-checks
-Each --trade is priced by the COPY in a fresh interpreter that cannot see the skill (proving the copy runs on
-its own), compared to the skill's own price, and recorded as a baseline. The trades, market and fixings files
-stay where they are; baselines refer to them by relative path.
+The version hashes the pricing code, the lock file and the Python version, so a library upgrade is a new version.
 
-DEST must be new, empty, or an earlier export. Re-exporting the same engine version refreshes the copy and keeps
-baselines. A different version needs --upgrade: the old engine moves to DEST/archive/<version>/ (still runnable),
-and every existing baseline is re-verified with the new engine.
-Exit codes: 0 ok, 1 a copied-engine run failed or disagreed, 2 invalid input.
+The copy is built in a staging folder beside DEST and checked there, by an interpreter that imports only the
+copy's code (with the skill's own libraries, which the lock file pins): each --trade is priced, compared to the
+skill's price and recorded as a baseline; on --upgrade every existing baseline is re-verified. DEST is replaced
+only when every check passes; otherwise it is left untouched. --check-env then also builds the copy's own
+locked .venv through price.sh (as a user will, network needed) and verifies the baselines with it.
+The trades, market and fixings files stay where they are; baselines refer to them by relative path.
+
+DEST must be new, empty, or an earlier export. Re-exporting the same version refreshes the copy and keeps
+baselines. A different version needs --upgrade: the old engine moves to DEST/archive/<version>/, which can still
+price and verify (`archive/<version>/baseline.sh verify --baselines DEST/baselines`).
+Exit codes: 0 ok, 1 a check failed (DEST unchanged, except after --check-env), 2 invalid input.
 """
 from __future__ import annotations
 
@@ -25,6 +30,7 @@ import datetime as dt
 import hashlib
 import importlib.metadata as md
 import json
+import os
 import platform
 import re
 import shutil
@@ -39,9 +45,12 @@ warnings.filterwarnings("ignore")
 
 from pricer import apply_overrides, build_plan, load_document, run  # noqa: E402
 
-TREES = ["pricer", "reference", "examples", "tests"]           # copied whole; replaced on every export
+TREES = ["pricer", "reference", "examples", "tests"]           # copied whole
 SCRIPTS = ["price.py", "baseline.py", "make_mock_market.py", "setup.sh"]
-VERSIONED = ["pricer", "scripts/price.py", "requirements.txt"]  # the code that computes prices: the version hash
+VERSIONED = ["pricer", "scripts/price.py", "requirements.txt", "requirements.lock.txt"]  # hashed into the version
+RUNNABLE = ["pricer", "scripts", "requirements.txt", "requirements.lock.txt", ".python-version", "ENGINE.json",
+            "price.sh", "baseline.sh"]                          # what an archived engine keeps
+ENGINE_OWNED = TREES + RUNNABLE[1:] + ["README.md", ".gitignore"]
 IGNORE = shutil.ignore_patterns("__pycache__", "*.pyc", ".pytest_cache", "inspect_*", "test_export.py")  # the copy has no exporter
 
 
@@ -61,11 +70,45 @@ def _files(root: Path, names: list[str]) -> list[Path]:
     return out
 
 
-def engine_version(root: Path = SKILL) -> str:
-    """Content hash of the code that computes prices; the same code gives the same version on any machine."""
+def _canon(name: str) -> str:
+    return re.sub(r"[-_.]+", "-", name).lower()
+
+
+def locked_requirements() -> dict[str, str]:
+    """Exact installed version of every requirement and of everything it pulls in, as this interpreter runs them."""
+    todo = []
+    for line in (SKILL / "requirements.txt").read_text().splitlines():
+        line = line.split("#", 1)[0].strip()
+        if line and not line.startswith("-"):                  # option lines (-r, --index-url, -e) name no package
+            todo.append(re.split(r"[<>=!~\[; @]", line, maxsplit=1)[0])
+    for name in todo:
+        md.distribution(name)                                  # a direct requirement must be installed
+    pins: dict[str, str] = {}
+    while todo:
+        try:
+            dist = md.distribution(todo.pop())
+        except md.PackageNotFoundError:                        # a dependency for another platform or Python
+            continue
+        name = dist.metadata["Name"]
+        if _canon(name) in map(_canon, pins):
+            continue
+        pins[name] = dist.version
+        todo += [re.split(r"[<>=!~\[; (@]", r, maxsplit=1)[0] for r in dist.requires or []
+                 if not re.search(r"extra\s*==", r)]           # optional extras are not installed by the lock
+    return dict(sorted(pins.items(), key=lambda kv: _canon(kv[0])))
+
+
+def lock_text(pins: dict[str, str]) -> str:
+    return (f"# python {sys.version_info.major}.{sys.version_info.minor}: every package at the version that produced "
+            "the recorded prices; installed by scripts/setup.sh\n" + "".join(f"{k}=={v}\n" for k, v in pins.items()))
+
+
+def engine_version(lock: str) -> str:
+    """Hash of the pricing code and the locked environment: the same pair gives the same version on any machine."""
     h = hashlib.sha256()
-    for f in _files(root, VERSIONED):
-        h.update(f.relative_to(root).as_posix().encode() + b"\0" + f.read_bytes() + b"\0")
+    for f in _files(SKILL, VERSIONED[:-1]):
+        h.update(f.relative_to(SKILL).as_posix().encode() + b"\0" + f.read_bytes() + b"\0")
+    h.update(b"requirements.lock.txt\0" + lock.encode())
     return h.hexdigest()[:12]
 
 
@@ -80,16 +123,6 @@ def _git() -> dict | None:
         return None
 
 
-def _locked_requirements() -> dict[str, str]:
-    """Exact installed versions of the requirements, as this interpreter runs them."""
-    pins = {}
-    for line in (SKILL / "requirements.txt").read_text().splitlines():
-        name = re.split(r"[<>=!~\[; ]", line.strip(), maxsplit=1)[0]
-        if name and not name.startswith("#"):
-            pins[name] = md.version(name)
-    return pins
-
-
 def _skill_price(trade: Path, sets: list[str]) -> float | None:
     doc, base = load_document(str(trade))
     try:
@@ -100,13 +133,18 @@ def _skill_price(trade: Path, sets: list[str]) -> float | None:
         return None
 
 
-def _run_copy(dest: Path, args: list[str]) -> tuple[int, dict]:
-    """Run a script of the copy in an isolated interpreter (-I: no PYTHONPATH, no script-dir magic beyond its own)."""
-    p = subprocess.run([sys.executable, "-I", *args], capture_output=True, text=True, cwd=Path.cwd())
+def _json_run(cmd: list[str]) -> tuple[int, dict]:
+    p = subprocess.run(cmd, capture_output=True, text=True, cwd=Path.cwd())
     try:
         return p.returncode, json.loads(p.stdout)
     except json.JSONDecodeError:
         return p.returncode or 1, {"ok": False, "stdout": p.stdout[-2000:], "stderr": p.stderr[-2000:]}
+
+
+def _run_copy(script: Path, args: list[str]) -> tuple[int, dict]:
+    """Run a script of the copy in an isolated interpreter (-I: no PYTHONPATH, no user site); it imports only the
+    copy's pricer, with this interpreter's libraries."""
+    return _json_run([sys.executable, "-I", str(script), *args])
 
 
 def _write(path: Path, text: str, executable: bool = False):
@@ -119,13 +157,21 @@ def _check_dest(dest: Path, version: str, upgrade: bool) -> tuple[str, str | Non
     """('new' | 'refresh' | 'upgrade', previous version, error)."""
     if dest.resolve() == SKILL or SKILL in dest.resolve().parents:
         return "", None, {"path": "DEST", "message": f"{dest} is inside the skill itself; export to the project folder"}
+    if dest.exists() and not dest.is_dir():
+        return "", None, {"path": "DEST", "message": f"{dest} is a file, not a folder"}
     if not dest.exists() or not any(dest.iterdir()):
         return "new", None, None
     meta = dest / "ENGINE.json"
-    if not meta.exists():
+    if not meta.is_file():
         return "", None, {"path": "DEST", "message": f"{dest} is not empty and holds no ENGINE.json, so it is not an "
                                                      "earlier export; choose another folder"}
-    old = json.loads(meta.read_text()).get("version")
+    try:
+        old = json.loads(meta.read_text())["version"]
+        if not isinstance(old, str) or not re.fullmatch(r"[A-Za-z0-9._-]+", old):
+            raise ValueError(f"bad version {old!r}")
+    except (ValueError, KeyError, TypeError) as e:
+        return "", None, {"path": "DEST/ENGINE.json", "message": f"unreadable engine metadata ({e}); restore it from "
+                                                                 "version control or export to a new folder"}
     if old == version:
         return "refresh", old, None
     if not upgrade:
@@ -135,41 +181,26 @@ def _check_dest(dest: Path, version: str, upgrade: bool) -> tuple[str, str | Non
     return "upgrade", old, None
 
 
-def _archive(dest: Path, old: str) -> Path:
-    arch = dest / "archive" / old
-    if arch.exists():
-        shutil.rmtree(arch)
-    arch.mkdir(parents=True)
-    for n in ["pricer", "scripts", "requirements.txt", "requirements.lock.txt", ".python-version", "ENGINE.json",
-              "price.sh", "baseline.sh"]:
-        if (dest / n).exists():
-            shutil.move(str(dest / n), str(arch / n))
-    return arch
-
-
-def export(dest: Path, version: str) -> dict:
-    dest.mkdir(parents=True, exist_ok=True)
-    for n in TREES + ["scripts"]:
-        if (dest / n).exists():
-            shutil.rmtree(dest / n)
+def build(stage: Path, version: str, pins: dict[str, str], lock: str, shown: str) -> dict:
+    """Write the engine into an empty `stage` folder; `shown` is how the README names the final folder."""
+    stage.mkdir(parents=True)
     for n in TREES:
-        shutil.copytree(SKILL / n, dest / n, ignore=IGNORE)
-    (dest / "scripts").mkdir()
+        shutil.copytree(SKILL / n, stage / n, ignore=IGNORE)
+    (stage / "scripts").mkdir()
     for s in SCRIPTS:
-        shutil.copy2(SKILL / "scripts" / s, dest / "scripts" / s)
-    shutil.copy2(SKILL / "requirements.txt", dest / "requirements.txt")
-
-    pins = _locked_requirements()
+        shutil.copy2(SKILL / "scripts" / s, stage / "scripts" / s)
+    shutil.copy2(SKILL / "requirements.txt", stage / "requirements.txt")
     pyver = f"{sys.version_info.major}.{sys.version_info.minor}"
-    _write(dest / "requirements.lock.txt",
-           "# exact versions that produced the recorded prices; installed by scripts/setup.sh\n" +
-           "".join(f"{k}=={v}\n" for k, v in pins.items()))
-    _write(dest / ".python-version", pyver + "\n")
-    _write(dest / "price.sh", WRAPPER.format(name="price", example="price ../trade.yaml"), executable=True)
-    _write(dest / "baseline.sh", WRAPPER.format(name="baseline", example="verify"), executable=True)
-    _write(dest / ".gitignore", ".venv/\n__pycache__/\n*.pyc\n.pytest_cache/\n")
-    _write(dest / "README.md", README.format(name=dest.name, version=version, date=dt.date.today().isoformat(), python=pyver,
-                                             pins="\n".join(f"| {k} | {v} |" for k, v in pins.items())))
+    _write(stage / "requirements.lock.txt", lock)
+    _write(stage / ".python-version", pyver + "\n")
+    _write(stage / "price.sh", WRAPPER.format(name="price", example="price ../trade.yaml"), executable=True)
+    _write(stage / "baseline.sh", WRAPPER.format(name="baseline", example="verify"), executable=True)
+    _write(stage / ".gitignore", ".venv/\n__pycache__/\n*.pyc\n.pytest_cache/\n")
+    direct = {_canon(re.split(r"[<>=!~\[; @]", x.split("#", 1)[0].strip(), maxsplit=1)[0])
+              for x in (SKILL / "requirements.txt").read_text().splitlines()}
+    _write(stage / "README.md", README.format(
+        name=shown, version=version, date=dt.date.today().isoformat(), python=pyver, n_pins=len(pins),
+        pins="\n".join(f"| {k} | {v} |" for k, v in pins.items() if _canon(k) in direct)))
     meta = {
         "version": version,
         "exported_at": dt.datetime.now().isoformat(timespec="seconds"),
@@ -177,11 +208,67 @@ def export(dest: Path, version: str) -> dict:
         "python": platform.python_version(),
         "platform": platform.platform(),
         "requirements": pins,
-        "files": {f.relative_to(dest).as_posix(): hashlib.sha256(f.read_bytes()).hexdigest()
-                  for f in _files(dest, VERSIONED)},
+        "files": {f.relative_to(stage).as_posix(): hashlib.sha256(f.read_bytes()).hexdigest()
+                  for f in _files(stage, VERSIONED)},
     }
-    _write(dest / "ENGINE.json", json.dumps(meta, indent=2) + "\n")
+    _write(stage / "ENGINE.json", json.dumps(meta, indent=2) + "\n")
     return meta
+
+
+def check(stage: Path, mode: str, trades: list[str], sets: list[str]) -> tuple[bool, dict]:
+    """Price with the staged copy: smoke test, record each trade, re-verify old baselines on an upgrade."""
+    out: dict = {}
+    code, smoke = _run_copy(stage / "scripts" / "price.py", ["validate", str(stage / "examples" / "vanilla_call.yaml")])
+    out["standalone_check"] = "ok" if code == 0 and smoke.get("ok") else smoke
+    ok = out["standalone_check"] == "ok"
+    rows = []
+    for t in trades:
+        code, res = _run_copy(stage / "scripts" / "baseline.py",
+                              ["record", t, *[x for s in sets for x in ("--set", s)]])
+        row = {"trade": t, **res}
+        if code == 0:
+            skill = _skill_price(Path(t), sets)
+            row["skill_price"] = skill
+            row["matches_skill"] = skill is not None and abs(res["price"] - skill) <= 1e-9 * max(1.0, abs(skill))
+            ok &= row["matches_skill"]
+        else:
+            ok = False
+        rows.append(row)
+    if rows:
+        out["baselines_recorded"] = rows
+    if mode == "upgrade":
+        code, ver = _run_copy(stage / "scripts" / "baseline.py", ["verify"])
+        out["baseline_verification"] = ver
+        ok &= code == 0
+    return ok, out
+
+
+def swap(stage: Path, dest: Path, mode: str, old: str | None) -> Path | None:
+    """Move the checked copy into DEST: the old engine goes to archive/<old>/ on an upgrade, is replaced otherwise."""
+    dest.mkdir(parents=True, exist_ok=True)
+    arch = None
+    if mode == "upgrade":
+        arch = dest / "archive" / old
+        if arch.exists():
+            shutil.rmtree(arch)
+        arch.mkdir(parents=True)
+    for n in ENGINE_OWNED:
+        p = dest / n
+        if not p.exists():
+            continue
+        if arch is not None and n in RUNNABLE:
+            shutil.move(str(p), str(arch / n))
+        elif p.is_dir():
+            shutil.rmtree(p)
+        else:
+            p.unlink()
+    if (stage / "baselines").exists():                # the staged baselines hold the old ones plus the new
+        if (dest / "baselines").exists():
+            shutil.rmtree(dest / "baselines")
+    for p in stage.iterdir():
+        shutil.move(str(p), str(dest / p.name))
+    stage.rmdir()
+    return arch
 
 
 def main(argv=None):
@@ -192,52 +279,58 @@ def main(argv=None):
     ap.add_argument("--set", action="append", default=[], metavar="PATH=VALUE", help="override applied to every "
                                                                                      "--trade, as in price.py")
     ap.add_argument("--upgrade", action="store_true", help="replace an export of another engine version")
+    ap.add_argument("--check-env", action="store_true", help="after installing, build DEST's own locked .venv via "
+                                                             "price.sh and verify the baselines with it (slow, network)")
     a = ap.parse_args(argv)
 
-    dest, version = Path(a.dest), engine_version()
+    dest = Path(a.dest)
+    shown = Path(os.path.relpath(dest.resolve(), Path.cwd())).as_posix()
     missing = [t for t in a.trade if not Path(t).is_file()]
     if missing:
         _dump({"ok": False, "errors": [{"path": "--trade", "message": f"trade file not found: {m}"} for m in missing]})
         return 2
+    try:
+        pins = locked_requirements()
+    except md.PackageNotFoundError as e:
+        _dump({"ok": False, "errors": [{"path": "requirements.txt", "message": f"not installed in this Python: {e}; "
+                                                                               "run scripts/setup.sh"}]})
+        return 2
+    lock = lock_text(pins)
+    version = engine_version(lock)
     mode, old, err = _check_dest(dest, version, a.upgrade)
     if err:
         _dump({"ok": False, "errors": [{"severity": "error", **err}]})
         return 2
-    archived = _archive(dest, old) if mode == "upgrade" else None
-    export(dest, version)
 
-    out = {"ok": True, "dest": str(dest.resolve()), "mode": mode, "version": version, "previous_version": old}
+    # build and check beside DEST (same depth, so baselines' relative paths resolve alike), then swap in
+    stage = dest.resolve().parent / f".{dest.name}.staging"
+    shutil.rmtree(stage, ignore_errors=True)
+    try:
+        build(stage, version, pins, lock, shown)
+        if (dest / "baselines").is_dir():
+            shutil.copytree(dest / "baselines", stage / "baselines")
+        ok, checks = check(stage, mode, a.trade, a.set)
+        out = {"ok": ok, "dest": str(dest.resolve()), "mode": mode, "version": version, "previous_version": old,
+               **checks}
+        if not ok:
+            out["dest_unchanged"] = True
+            _dump(out)
+            return 1
+        archived = swap(stage, dest, mode, old)
+    finally:
+        shutil.rmtree(stage, ignore_errors=True)
     if archived:
         out["archived_engine"] = str(archived)
 
-    # the copy runs on its own: an isolated interpreter that imports only DEST's pricer
-    code, smoke = _run_copy(dest, [str(dest / "scripts" / "price.py"), "validate",
-                                   str(dest / "examples" / "vanilla_call.yaml")])
-    out["standalone_check"] = "ok" if code == 0 and smoke.get("ok") else smoke
-    ok = code == 0
-
-    recorded = []
-    for t in a.trade:
-        sets = [x for s in a.set for x in ("--set", s)]
-        code, res = _run_copy(dest, [str(dest / "scripts" / "baseline.py"), "record", t, *sets])
-        row = {"trade": t, **res}
-        if code == 0:
-            skill = _skill_price(Path(t), a.set)
-            row["skill_price"] = skill
-            row["matches_skill"] = skill is not None and abs(res["price"] - skill) <= 1e-9 * max(1.0, abs(skill))
-            ok &= row["matches_skill"]
-        else:
-            ok = False
-        recorded.append(row)
-    if recorded:
-        out["baselines_recorded"] = recorded
-    if mode == "upgrade":
-        code, ver = _run_copy(dest, [str(dest / "scripts" / "baseline.py"), "verify"])
-        out["baseline_verification"] = ver
-        ok &= code == 0
-    out["ok"] = ok
-    out["next"] = {"reprice": f"{dest}/price.sh price <trade.yaml> [--set valuation_date=YYYY-MM-DD]",
-                   "verify": f"{dest}/baseline.sh verify", "guide": f"{dest}/README.md"}
+    if a.check_env:                                   # the user's path: price.sh -> setup.sh -> locked .venv
+        has_baselines = any((dest / "baselines").glob("*.json"))
+        cmd = [str(dest / "baseline.sh"), "verify"] if has_baselines else \
+              [str(dest / "price.sh"), "validate", str(dest / "examples" / "vanilla_call.yaml")]
+        code, env = _json_run(cmd)
+        out["env_check"] = env if code or not env.get("ok") else "ok"
+        out["ok"] = ok = code == 0 and env.get("ok", False)
+    out["next"] = {"reprice": f"{shown}/price.sh price <trade.yaml> [--set valuation_date=YYYY-MM-DD]",
+                   "verify": f"{shown}/baseline.sh verify", "guide": f"{shown}/README.md"}
     _dump(out)
     return 0 if ok else 1
 
@@ -256,7 +349,7 @@ README = """# Stand-alone pricing engine
 Engine version **{version}**, exported {date} from the `structured-derivative-pricer` skill.
 This folder holds everything needed to re-price your trades with no AI and no skill installed: the engine source,
 the exact library versions, a guide to the trade YAML, and recorded prices to check the copy against.
-Python {python}.
+Python {python}. Main packages below; `requirements.lock.txt` pins all {n_pins}, dependencies included.
 
 | package | version |
 |---|---|
@@ -265,12 +358,13 @@ Python {python}.
 ## Set up (once per machine)
 
 macOS / Linux: nothing to do. `./price.sh` creates `.venv/` with the locked versions on first use
-(with [uv](https://docs.astral.sh/uv/) if installed, otherwise `python3 -m venv` + pip).
+(with [uv](https://docs.astral.sh/uv/) if installed, otherwise `python{python}` or `python3` + pip), and rebuilds it
+whenever `requirements.lock.txt` or `.python-version` changes.
 
 Windows (PowerShell):
 
 ```powershell
-py -{python} -m venv .venv
+py -{python} -m venv .venv                          # after an engine upgrade: delete .venv and repeat
 .venv\\Scripts\\python -m pip install -r requirements.lock.txt
 .venv\\Scripts\\python scripts\\price.py price ..\\trade.yaml
 ```
@@ -323,9 +417,10 @@ market and fixings files, and the result.
 {name}/baseline.sh record trade.yaml       # record a new one (e.g. a month-end mark)
 ```
 
-`reproduced`: same inputs, same price. `inputs_changed`: a file was edited since recording, so the new price is
-shown but not judged. `MISMATCH`: same inputs, different price, which means the engine or a library version
-changed; check `requirements.lock.txt` against `.venv`.
+`reproduced`: same inputs, same price. `inputs_changed`: a file was edited since recording, so the new price (or the
+error, e.g. missing fixings) is shown but not judged. `MISMATCH`: same inputs, different price. The `environment`
+part of the output names the cause: engine files edited since export (`engine_files_modified`) or installed
+library versions that differ from the lock (`library_drift`).
 
 ## Writing or changing a trade
 
@@ -340,8 +435,14 @@ changed; check `requirements.lock.txt` against `.venv`.
 pricer/          engine source (do not edit if you want baselines to keep reproducing)
 scripts/         price.py (CLI), baseline.py, make_mock_market.py, setup.sh
 tests/           the engine's regression suite: .venv/bin/python -m pytest tests -q
-ENGINE.json      version = hash of pricer/, scripts/price.py, requirements.txt; source commit; file checksums
+ENGINE.json      version = hash of pricer/, scripts/price.py and the lock file; source commit; file checksums
 archive/<ver>/   earlier engine versions, kept runnable after an upgrade
+```
+
+An archived engine prices and verifies on its own; point it at the shared baselines:
+
+```bash
+{name}/archive/<ver>/baseline.sh verify --baselines {name}/baselines
 ```
 
 From Python:
