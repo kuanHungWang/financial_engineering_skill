@@ -25,8 +25,11 @@ $PY <skill_dir>/scripts/report.py evidence INPUT --out-dir DIR [--run-tests]
 `INPUT` is the trade YAML (all tests at defaults) or a **report config** (below). It prints a short summary:
 `status_counts` and `attention` (every WARN / FAIL). Exit 1 if a test FAILED, 2 for bad input. It takes about 30
 pricings: seconds for a fast trade, a few minutes for a large Bermudan; progress goes to stderr. `--run-tests` also
-runs the engine's test suite (about a minute) and records the result. Put `DIR` where the user wants the report
-(e.g. `reports/<trade id>/`), not in the skill directory.
+runs the engine's test suite (about a minute) and records the result. Use `--out-dir report` (or
+`reports/<trade id>/` for several trades, or where the user wants it), never the skill directory. The config, its
+case trade files, the evidence and `report.md` all live in that folder, so the project's top level keeps only the
+user's trades and results (SKILL.md, "Project layout"). Read the printed summary directly; do not redirect stdout or
+stderr to files.
 
 ## Workflow
 
@@ -40,8 +43,8 @@ runs the engine's test suite (about a minute) and records the result. Put `DIR` 
    - the **data sources** of each market input and of the fixings;
    - their own **report template** or format (a Word / PDF / Markdown document, or a list of sections). Without
      one, use `templates/sr11-7.md`.
-3. **Design the tests** in a report config (below): pick benchmarks and limiting cases that test *this* product's
-   risk drivers, not generic ones. Keep the trade's own seed.
+3. **Design the tests** in a report config (below), saved as `report/report_config.yaml`: pick benchmarks and
+   limiting cases that test *this* product's risk drivers, not generic ones. Keep the trade's own seed.
 4. **Run evidence.** Read `attention`. Investigate every WARN / FAIL before writing about it: re-run with more
    paths, `price.py inspect`, check the market data. A FAIL in a case you designed may be a wrong expectation;
    fix the config only if the expectation was wrong, and say so in the report. Never loosen a tolerance to turn a
@@ -83,10 +86,11 @@ runs the engine's test suite (about a minute) and records the result. Put `DIR` 
 
 ## Report config
 
-Every key but `trade` is optional. Paths are relative to the config file.
+Every key but `trade` is optional. Paths are relative to the config file, so with the config in `report/` the
+base trade is `../trade_<name>.yaml` and case trades are `cases/<name>.yaml`.
 
 ```yaml
-trade: trade_acn.yaml
+trade: ../trade_acn.yaml
 set: [pricing.num_paths=50000]          # overrides applied to every run (base, variants, their own trade files)
 
 convergence: {paths: [2500, 5000, 10000, 20000, 50000]}   # default: N/16, N/8, N/4, N/2, N
@@ -111,7 +115,7 @@ stress:                                 # replaces the default grid; dims: spot 
 benchmarks:                             # other models / methods for the same trade
   - label: Heston
     description: stochastic-vol benchmark for forward-skew exposure
-    trade: trade_acn_heston.yaml        # a full trade file, or `set:` overrides of the base trade
+    trade: cases/trade_acn_heston.yaml  # a full trade file, or `set:` overrides of the base trade
     expect: {approx: base, tol_se: 4}   # optional; without it the row is INFO
 
 cases:                                  # limiting / boundary cases with an expected outcome
@@ -120,7 +124,7 @@ cases:                                  # limiting / boundary cases with an expe
     set: [trade.termination_events.0.barrier=100]
     expect: {lt: base}
   - label: Matches the vanilla it collapses to
-    trade: case_vanilla_equivalent.yaml
+    trade: cases/vanilla_equivalent.yaml
     expect: {approx: benchmark:Heston}  # rhs: a number, base, case:LABEL or benchmark:LABEL (earlier entries)
 
 references:                             # outcomes analysis: prices from outside the model
@@ -180,8 +184,8 @@ Pick what tests the product's main risk drivers and the engine's riskiest choice
 | Floating / SOFR legs | - | zero spread, no cap/floor = par-like floater; cap very high = uncapped |
 | TARN | - | target unreachable = full coupon strip; target tiny = first coupon only |
 
-Build an equivalence case as a separate trade file next to the config (start from the base trade, change one
-feature) and compare with `approx`. For a relation (callable <= straight), use `le` / `ge`. State the expected
+Build an equivalence case as a separate trade file in `report/cases/` (start from the base trade, change one
+feature; its `market_data` and `fixings` paths are relative to the file, so they become `../../market/...`) and compare with `approx`. For a relation (callable <= straight), use `le` / `ge`. State the expected
 direction from the **holder's** view, as the engine signs prices.
 
 `evidence.json` has the same results unrounded: `key` (headline numbers), `summary` / `status_counts` (every

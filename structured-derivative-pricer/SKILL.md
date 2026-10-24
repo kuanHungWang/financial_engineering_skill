@@ -29,6 +29,38 @@ PY=$(<skill_dir>/scripts/setup.sh)      # creates <skill_dir>/.venv with QuantLi
 
 After that, run every command below as `$PY <skill_dir>/scripts/price.py ...`.
 
+## Project layout
+
+For a new model (the first trades of a product, a prototype, a validation), keep the top of the working directory
+to the files the user owns and reads: trades and results. Everything else goes in a sub-folder. A production
+project has its own structure; follow it (see "Reusing a validated model" and "Fitting the user's folders").
+
+```
+<project>/
+├── trade_<name>.yaml        trade specs the user prices (one per trade)
+├── result_<name>.json       price.py price --out (result.json when there is one trade)
+├── market/                  market files, plus the script that converted the user's data, if you wrote one
+├── fixings/                 past fixings
+├── report/                  only when a report is asked for (see "Validation report")
+│   ├── report.md            the report
+│   ├── report_config.yaml
+│   ├── cases/               benchmark and limiting-case trade files the config names
+│   ├── materials.md
+│   └── evidence.json
+├── diagnostics/             inspect output, analysis scripts, kept logs
+└── pricing_engine/          stand-alone copy, only after a yes
+```
+
+- **Read command output directly; do not redirect it to files.** Every script prints its JSON result on stdout and
+  progress on stderr, so the tool call already captures both. No `> out.json`, `2> err.txt` or
+  `> inspect_manifest.json` in the project (`inspect` writes its `manifest.json` itself). If a long run's output
+  must be kept, write it to `diagnostics/logs/`.
+- A helper script you write for analysis goes in `diagnostics/`; one that builds market data from the user's files
+  goes in `market/`, next to its output, so the data can be rebuilt.
+- A test-only trade (straight bond, zero vol, single exercise date) is report material: `report/cases/`, never
+  next to the user's trades.
+- Follow a layout the user already has, or one they ask for, over this one.
+
 ## Workflow
 
 1. **Read the term sheet.** List every economic feature: underlying(s), dates, strike, notional,
@@ -49,10 +81,11 @@ After that, run every command below as `$PY <skill_dir>/scripts/price.py ...`.
 3. **Market data.** Ask the user for curves, spot, dividends and vols (swaption vols to calibrate Hull-White), or look for files in the working
    directory. The format is in [reference/market_data.md](reference/market_data.md). Convert what they
    give (CSV, pasted tables) into that YAML. **Never invent market data silently.** For a demo or test,
-   `scripts/make_mock_market.py OUT.yaml --as-of YYYY-MM-DD` writes clearly-labelled mock data. Say
+   `scripts/make_mock_market.py market/OUT.yaml --as-of YYYY-MM-DD` writes clearly-labelled mock data. Say
    in your answer that the price uses mock data.
-4. **Write the spec** in the working directory (e.g. `trade_<name>.yaml`). Start from the closest
-   file in `examples/`.
+4. **Write the spec** in the working directory (e.g. `trade_<name>.yaml`; see "Project layout"). Start from the
+   closest file in `examples/`, or, when the project already has a validated trade of this type, from that trade
+   (see "Reusing a validated model").
 5. **Validate:** `price.py validate trade.yaml`. It returns every error at once, each with its
    input path, message and hint (often "Did you mean ..."). Fix them all, then validate again.
    Exit code 2 means invalid.
@@ -75,7 +108,7 @@ When the user asks for model documentation, a validation or model review report,
 the writing rules. In short: `scripts/report.py evidence` runs the tests (convergence, seeds, sensitivities, stress,
 benchmarks, limiting cases, reference prices) and writes the material, `materials.md`. You then write `report.md`
 from the material, following the user's own template when they give one (ask), otherwise the SR 11-7 outline
-`templates/sr11-7.md`.
+`templates/sr11-7.md`. Everything the report needs (config, case trades, evidence, the report) goes in `report/`.
 
 - Copy every number exactly from `materials.md`; never compute or estimate one yourself.
 - Governance, policies and controls are out of scope (they differ between organisations): write no approval,
@@ -99,7 +132,8 @@ user will (about a minute, needs network) and verifies with it. Offer it when th
 
 - **Ask** in one short question after step 8. Say what it gives them (re-pricing with no AI, pinned versions,
   recorded prices to check against) and roughly how big it is (about 1 MB, plus a `.venv` built on first use). Name
-  the folder you will use. Suggest keeping trades, `market/` and `fixings/` beside it.
+  the folder you will use: the user's structure decides where (e.g. `derivative/pricer/`); without one, suggest
+  keeping trades, `market/` and `fixings/` beside it.
 - **Already exported** (`DEST/ENGINE.json` exists): do not ask again. Same version: record each newly priced trade
   as a baseline (`$PY <skill_dir>/scripts/export_engine.py DEST --trade new_trade.yaml`), and say so. Different version: tell
   the user both versions, and upgrade only on a yes with `--upgrade`. That re-verifies every baseline with the new
@@ -108,6 +142,59 @@ user will (about a minute, needs network) and verifies with it. Offer it when th
 - Never edit files inside an export, as the hard rule for `pricer/` says. After exporting, point the user to
   `DEST/README.md` and give the re-price command.
 
+## Reusing a validated model
+
+When the user prices a new trade of a type their project already priced and validated (a trade file with a report,
+or a stand-alone copy with baselines), that earlier trade file **is** the model. Reuse it; do not derive a new spec.
+
+1. **Start from the validated trade file**, not from `examples/`. If there are several, ask which one.
+2. **Change only term-sheet fields**: id, dates, notional, strike, coupon, barrier levels, call schedule, notice.
+   Keep everything that is the model: `model` and its calibration settings, `pricing` (method, `num_paths`, `seed`,
+   regressors, `exercise_fit_paths`), observable and index definitions, conventions. A term sheet that needs a model
+   field changed (a new feature, another underlying or currency) is no longer the validated model: say so, and say
+   what the change touches.
+3. **Show the diff** against the validated file before pricing, one line per changed field.
+4. Validate, plan (`method` and the `graph` should match the validated trade's), price. Write files where the
+   user's structure puts them; create no `report/` or `diagnostics/` unless asked.
+5. **With a stand-alone copy**, price with it (`DEST/price.sh price ...`), so the price comes from the engine version
+   the model was validated on, and record the trade as a baseline ("Already exported" above). If the skill's
+   engine version differs from the copy's, tell the user both.
+
+## Fitting the user's folders
+
+The stand-alone copy knows nothing about folder structures, batches or output naming, on purpose: it prices one
+trade per call, `DEST/price.sh price TRADE [--set ...] [--out FILE]`, the same core as the skill's `price.py`. Fitting
+it into the user's structure is your job: write a small **adaptor** (`.sh` or `.py`) where the user wants it.
+For example:
+
+```
+derivative/
+├── pricer/                    stand-alone copy (export_engine.py derivative/pricer)
+├── market_data/market_2026-10-24.yaml
+├── fixed_rate_callable/trade_*.yaml
+├── range_accrual/trade_*.yaml
+├── batch.sh                   adaptor: every trade_*.yaml -> output/<date>/<product>/<trade>.json
+└── output/
+```
+
+or one `batch.sh` per product folder, each writing to its own `output/`. Before writing one, ask for the
+structure, the run (which trades, which market file, how the valuation date is chosen) and the output (one JSON per
+trade, a summary CSV, a file-name pattern), unless the user has already said.
+
+An adaptor only moves inputs and outputs:
+- It calls `DEST/price.sh` (or `DEST/baseline.sh`) once per trade. It passes the run's market file and date with
+  `--set market_data=<absolute path> --set valuation_date=YYYY-MM-DD`; a relative `market_data` is resolved from
+  the trade file, not the current directory.
+- It checks every exit code (0 priced, 1 failed, 2 invalid input). It names each failed trade at the end, and its
+  own exit code is non-zero if any trade failed. It never skips a failure silently.
+- It may collect result fields (price, std_error, confidence_interval, warnings) into a summary, copied as they
+  are.
+- It never computes, adjusts, rescales or converts a price, never edits market data, and never edits the copy.
+  Anything beyond moving and collecting is engine work: stop and tell the user (Hard rules).
+
+Keep it outside `DEST`, so an upgrade replaces the engine and leaves the adaptor alone. Run it once on the user's
+trades and check one price against a direct `price.sh` call (or a baseline). Then give the user the command.
+
 ## Hard rules
 
 - Do **not** write Python that builds, prices or simulates a trade, or that changes what the engine produced: no
@@ -115,6 +202,8 @@ user will (about a minute, needs network) and verifies with it. Offer it when th
   If a feature cannot be expressed with the catalog, **stop and tell the user**: name the missing
   component, for example "a range-accrual coupon leg" or "Bermudan issuer call". Custom components
   are a planned extension point (see "Extending"). They are not a workaround to improvise.
+- A shell or Python **adaptor** that runs the engine over the user's folders is allowed, within the limits in
+  "Fitting the user's folders": it moves inputs and outputs, never values.
 - Python **is** allowed for an analysis sub-task the user asks for, read-only on the files `price.py inspect` wrote
   (see "Inspecting intermediate results"): whether the paths look reasonable, how dispersion grows with vol, the
   Bermudan exercise boundary, checking that a path's cashflows times its discount factors give its `pv`, plots.
@@ -169,9 +258,9 @@ products, it can help to price under both `black_scholes` (local vol from the su
 
 `price.py inspect trade.yaml [--node KEY ...] [--out-dir DIR] [--max-paths N]` prices the trade exactly as `price`
 does (same seed, same paths, same price) and writes the result of **every graph node** to `DIR`. Always pass
-`--out-dir` under your scratch directory (or a folder the user named), not the user's repository; the default
-`./inspect_<trade id>/` is relative to the current directory. `DIR` must be new, empty, or an earlier inspect output
-(whose listed files are replaced). Nothing is recomputed: each node's own output object is serialized by data type, so
+`--out-dir`: `diagnostics/inspect_<trade id>/` in the project when the user will look at the files (the default,
+relative to the current directory), your scratch directory when only you need them, or a folder the user named.
+`DIR` must be new, empty, or an earlier inspect output (whose listed files are replaced). Nothing is recomputed: each node's own output object is serialized by data type, so
 any node, including one added later, can be inspected. Use it when the user wants to check components by hand
 (UAT), analyse paths, or reconcile a cashflow.
 

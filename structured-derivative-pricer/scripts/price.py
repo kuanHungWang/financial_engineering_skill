@@ -53,7 +53,7 @@ def main(argv=None):
             p.add_argument("--node", action="append", default=[], metavar="KEY",
                            help="graph node to write (repeatable): an exact key from `plan` (leg:coupon, curve:USD) "
                                 "or a kind (leg, curve, observable, fixings, price, ...); default: every node")
-            p.add_argument("--out-dir", help="directory for the files (default: ./inspect_<trade id>); must be new, "
+            p.add_argument("--out-dir", help="directory for the files (default: ./diagnostics/inspect_<trade id>); must be new, "
                                              "empty, or an earlier inspect output, whose listed files are replaced")
             p.add_argument("--max-paths", type=int, metavar="N",
                            help="write only the first N paths of path matrices, rounded up to keep antithetic "
@@ -93,7 +93,7 @@ def main(argv=None):
         except InspectError as e:
             _dump({"ok": False, "errors": [{"severity": "error", "path": "--node", "message": str(e)}]})
             return 2
-        out_dir = a.out_dir or f"inspect_{safe_name(plan.input.trade.id)}"
+        out_dir = a.out_dir or f"diagnostics/inspect_{safe_name(plan.input.trade.id)}"
         try:
             _, manifest = inspect(plan, out_dir, a.node, a.max_paths)
         except InspectError as e:          # e.g. --out-dir holds files inspect did not write
