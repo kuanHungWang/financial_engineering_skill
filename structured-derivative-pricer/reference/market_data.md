@@ -80,5 +80,5 @@ swaption_vols:                    # ATM swaption vols, for Hull-White calibratio
   calendar arbitrage in the quotes.
 - Swaption vol matrices interpolate bilinearly between quotes and extrapolate flat. Validation warns when
   the longest expiry plus the longest tenor ends before the trade maturity.
-- Mock data: `scripts/make_mock_market.py OUT.yaml --as-of <date> [--ticker SPX --spot 5000]`
+- Mock data: `scripts/make_mock_market.py market/OUT.yaml --as-of <date> [--ticker SPX --spot 5000]`
   writes synthetic data labelled as mock (curves, an equity surface, a USD normal swaption matrix). Use it only for demos and tests.

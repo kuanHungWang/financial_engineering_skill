@@ -8,6 +8,7 @@ from __future__ import annotations
 import argparse
 import datetime as dt
 import math
+from pathlib import Path
 
 import yaml
 
@@ -82,6 +83,7 @@ if __name__ == "__main__":
     ap.add_argument("--spot", type=float, default=5000.0)
     a = ap.parse_args()
     doc = build(dt.date.fromisoformat(a.as_of), a.ticker, a.spot)
+    Path(a.out).parent.mkdir(parents=True, exist_ok=True)
     with open(a.out, "w") as f:
         f.write("# MOCK market data - synthetic numbers for development/testing only.\n")
         yaml.safe_dump({k: v for k, v in doc.items() if k != "_note"}, f, sort_keys=False,
