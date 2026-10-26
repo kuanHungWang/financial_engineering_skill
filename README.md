@@ -2,24 +2,16 @@
 
 # Structured Derivative Pricer — a Claude skill
 
-A [Claude skill](https://docs.claude.com/en/docs/claude-code/skills) that prices exotic and structured
-derivatives from a term sheet, and writes model documentation / validation reports (SR 11-7 style) for a priced
-trade.
+A derivatives [Claude skill](https://docs.claude.com/en/docs/claude-code/skills) designed for professional
+institutional investors. It builds pricing models for vanilla and exotic derivatives and structured products. Once
+the skill is installed, you only describe the product terms. The AI picks the matching model components (model,
+curve, calibration, payoff, early termination and so on) and prices the trade by Monte Carlo simulation when there
+is no closed form.
 
-**Claude writes a declarative YAML trade spec. Claude never writes pricing code.** A pre-built, pre-tested
-QuantLib engine validates the spec, picks the pricing method (closed form when one exists, Monte Carlo
-otherwise) and prices it. The price is reproducible per seed and does not depend on code the AI improvised.
-
-```
-You: "Price this autocallable note" + term sheet + market data
-        │
-        ▼
-Claude: reads the term sheet, asks about ambiguities, converts your market data,
-        writes trade_<name>.yaml
-        │
-        ▼
-Engine: validate ─▶ plan (analytic or MC, and why) ─▶ price ─▶ result.json
-```
+The skill does not build a pricing model by generating code. It uses a factory design pattern: most of the common
+components (curve, model, calibration, schedule, market convention, Monte Carlo, Longstaff-Schwartz and more) are
+built in advance, and a full pricing workflow is assembled from them. Every pricing model is expressed in the end
+as one YAML file. This avoids the "generate code → run → debug" loop entirely, so results come out consistently.
 
 ---
 
@@ -66,32 +58,27 @@ PY=$(~/.claude/skills/structured-derivative-pricer/scripts/setup.sh)
 $PY -m pytest ~/.claude/skills/structured-derivative-pricer/tests -q
 ```
 
-### Try it
-
-The [`test_case/`](./test_case/README.md) folder has seven natural-language term sheets and raw mock market
-data (CSV, deliberately not in the skill's format). Copy it into a project and ask Claude, for example:
-
-> Price `termsheets/03_worst_of_phoenix_autocall.md`. Use the market data in `market_data/`.
-
-> Write an SR 11-7 validation report for it.
-
 ---
 
 ## What it can do
 
-### Pricing
+### 1. Build and validate pricing models
 
-Give Claude a term sheet or a product description and ask for a fair value, NPV, MTM or a pricing model.
-It works in English and Chinese (e.g. "結構型商品評價", "公平價值").
+Give Claude a term sheet or a product description and ask for a fair value, NPV, MTM or a pricing model. It works
+in English and Chinese (e.g. "結構型商品評價", "公平價值"). Claude reads the terms, asks about anything ambiguous
+(barrier observation frequency, who holds a call right, fixing conventions), converts your market data, and writes
+the trade spec. The engine checks the whole spec before running, returning every error at once, then shows the
+plan (closed form or Monte Carlo, and why) before pricing.
 
-Products are assembled from building blocks, so many term sheets need no new code:
+#### 1.1 Supported asset classes, models, payoffs and early termination
 
-| Block | Available |
+| | Supported |
 |---|---|
-| **Models** | `black_scholes` (one or several correlated equities; constant, term or Dupire local vol) · `heston` (single asset, given or calibrated to the vol surface) · `hull_white` 1F rates (given, or calibrated to ATM swaptions: coterminal, full matrix or listed points) |
-| **Observables** | equity level or performance · term rate · swap rate (CMS) · overnight rate (SOFR) · `linear` combinations (spreads, baskets, inverse-floater formulas) · `min_of` / `max_of` (worst-of, best-of) |
-| **Legs** | fixed · floating (in advance, in arrears, compounded in arrears with lockout; gearing, spread, cap, floor) · range accrual (any number of ranges on any observables) · option payoff · fixed amount · `path_dependent` (a state carried between periods: snowball, memory / phoenix coupon, ratchet, cliquet, lookback, cumulative cap) |
-| **Masks / events** | kick-in and knock-out conditions on any leg · trade-level knock-out (autocall) · target redemption (TARN) · Bermudan exercise (issuer call, holder put, cancellation, Bermudan option) by Longstaff-Schwartz |
+| **Asset classes** | equity (single or several correlated underlyings) · interest rates (term rates, swap rates / CMS, overnight rates such as SOFR) |
+| **Models** | `black_scholes` (constant, term or Dupire local vol) · `heston` (single asset, given or calibrated to the vol surface) · `hull_white` 1F rates (given, or calibrated to ATM swaptions: coterminal, full matrix or listed points) |
+| **Observables** | equity level or performance · term rate · CMS · overnight rate · `linear` combinations (spreads, baskets, inverse-floater formulas) · `min_of` / `max_of` (worst-of, best-of) |
+| **Payoffs (legs)** | fixed · floating (in advance, in arrears, compounded in arrears with lockout; gearing, spread, cap, floor) · range accrual (any number of ranges on any observables) · option payoff · fixed amount · `path_dependent` (a state carried between periods: snowball, memory / phoenix coupon, ratchet, cliquet, lookback, cumulative cap) · kick-in and knock-out conditions on any leg |
+| **Early termination** | knock-out (autocall) · target redemption (TARN) · Bermudan exercise (issuer call, holder put, cancellation, Bermudan option) by Longstaff-Schwartz |
 | **Closed forms** | European vanilla (BSM, Heston) · single continuous barrier (BSM) |
 
 Worked examples in [`structured-derivative-pricer/examples/`](./structured-derivative-pricer/examples/):
@@ -100,13 +87,7 @@ Bermudan put, callable fixed-rate bond (given and calibrated Hull-White), cancel
 accrual, CMS inverse floater in arrears, dual-equity range accrual, fixed-then-range-accrual hybrid, inverse
 floater TARN, SOFR FRN with lockout, seasoned range accrual note.
 
-### Seasoned trades
-
-A trade can be priced at any date of its life, mid-period included. Past fixings come from a shared fixings
-file; future ones from the simulation. A spec is written once and re-priced by changing only the valuation date
-and the market data.
-
-### Result checks
+#### 1.2 What a model outputs
 
 Every price comes with what you need to trust it:
 
@@ -118,26 +99,37 @@ Every price comes with what you need to trust it:
 - Hull-White calibration fit and Heston calibration RMSE,
 - warnings such as vol-surface extrapolation.
 
-### Intermediate results (UAT, model review)
+On request (UAT, model review), `price.py inspect` re-prices the trade exactly (same seed, same price) and writes
+the output of every step to disk: paths, fixings, cashflows, discount factors, exercise state and regression
+coefficients, as CSV and JSON.
 
-`price.py inspect` re-prices the trade exactly (same seed, same price) and writes the output of every graph node
-to disk: paths, fixings, cashflows, discount factors, exercise state and regression coefficients, as CSV and
-JSON. Useful for reconciling a cashflow by hand or checking an exercise boundary.
+### 2. Write validation reports and explain price changes
 
-### Validation report
-
-On request, `report.py evidence` runs the tests a reviewer expects (convergence, seed stability, sensitivities,
-stress, benchmarks, limiting cases, reference prices) and collects the material. Claude then writes the report
-from that material, in your template or the SR 11-7 outline in
+`report.py evidence` runs the tests a reviewer expects (convergence, seed stability, sensitivities, stress,
+benchmarks, limiting cases, reference prices) and collects the material. Claude then writes the report from that
+material, in your template or the SR 11-7 outline in
 [`templates/sr11-7.md`](./structured-derivative-pricer/templates/sr11-7.md). Every number is copied from the
 evidence, never computed by the AI.
 
-### Stand-alone copy
+To explain why a price moved, the intermediate results of two runs with the same seed (for example two market
+dates) can be compared step by step, and the sensitivities and stress tests show which inputs drive the price.
+
+### 3. Price inventory trades and reuse validated models
+
+A trade can be priced at any date of its life, mid-period included. Past fixings come from a shared fixings
+file; future ones from the simulation. A spec is written once and re-priced by changing only the valuation date
+and the market data.
+
+When a new trade has the same structure as one already validated, Claude starts from the validated trade file and
+changes only its term-sheet fields (dates, notional, strike, coupon, barriers, call schedule), keeping the model,
+calibration and pricing settings. It shows you the diff before pricing.
+
+### 4. Export the model to run without AI
 
 After the first price, Claude offers to export the engine into your project (`export_engine.py`). The copy
 re-prices with no AI and no skill installed: pinned package versions (`requirements.lock.txt`), recorded baseline
-prices, and `baseline.sh verify` to detect when a re-price no longer matches and why (edited files, library
-drift). Engine upgrades re-verify every baseline and archive the old version.
+prices, and `baseline.sh verify` to detect when a re-price no longer matches and why (changed inputs, edited
+files, library drift). Engine upgrades re-verify every baseline and archive the old version.
 
 ---
 
@@ -167,74 +159,10 @@ Other things to know:
 
 ---
 
-## The engine behind it
+## Pricing engine: QuantLib
 
-### Spec → graph → price
-
-The engine is a factory: it turns the YAML spec into a graph of pre-tested components and runs it.
-
-```
-curve ─▶ discount ─▶ underlying ─▶ model ─▶ scenario ─▶ observables ─▶ legs ─▶ masks ─▶ price
-                                                   └────────▶ discount_factors ─────────┘
-```
-
-1. **Validate** (`price.py validate`): the whole spec is checked before anything runs, by pydantic schemas. Every
-   error comes back at once, with its input path and a hint ("Did you mean ...").
-2. **Plan** (`price.py plan`): shows the graph, the fixing dates, and the chosen method with its reason.
-3. **Price** (`price.py price`): closed form when one matches, otherwise Monte Carlo (antithetic paths, fixed
-   seed), with Longstaff-Schwartz regression for Bermudan exercise.
-
-### Built on QuantLib
-
-[QuantLib](https://www.quantlib.org/) supplies the curves, calendars, day counts, schedules, index definitions
-(`Sofr`, `Euribor`, `EuriborSwapIsdaFixA`, ...), the Black-Scholes / Heston / Hull-White processes and their
-calibration, and the closed-form engines. The pricer adds the composable payoff layer, path simulation,
-history-aware observables and exercise logic on top.
-
-### Layout
-
-```
-structured-derivative-pricer/
-├── SKILL.md            instructions Claude follows
-├── pricer/             the engine (registry, spec, models, observables, legs, masks, Bermudan, analytic, ...)
-├── scripts/            price.py, report.py, export_engine.py, baseline.py, make_mock_market.py, setup.sh
-├── reference/          components, market data format, exercise, model report guide
-├── templates/          SR 11-7 report outline
-├── examples/           example trade specs + mock market and fixings
-└── tests/              regression tests against closed forms and limiting cases
-docs/index.html         static component reference (open in a browser)
-test_case/              smoke-test term sheets and raw mock market data
-```
-
-### Commands
-
-```bash
-PY=$(structured-derivative-pricer/scripts/setup.sh)
-$PY structured-derivative-pricer/scripts/price.py catalog [kind]       # every component, field, default
-$PY structured-derivative-pricer/scripts/price.py validate trade.yaml
-$PY structured-derivative-pricer/scripts/price.py plan trade.yaml
-$PY structured-derivative-pricer/scripts/price.py price trade.yaml --out result.json --set pricing.num_paths=100000
-$PY structured-derivative-pricer/scripts/price.py inspect trade.yaml --out-dir diagnostics/inspect
-```
-
-A minimal spec ([`examples/vanilla_call.yaml`](./structured-derivative-pricer/examples/vanilla_call.yaml)):
-
-```yaml
-valuation_date: 2026-09-28
-market_data: market/mock_market.yaml
-model: {type: black_scholes, underlying: SPX, discount_curve: USD}
-trade:
-  id: CALL-SPX-1Y
-  maturity: 1Y
-  legs:
-    - {id: call, type: option_payoff, underlying: SPX, option_type: call, strike: 1.0, notional: 1000000}
-```
-
-### Extending
-
-Each component is a class registered with `@register(kind, type)` and a pydantic `Spec`
-(`pricer/registry.py`). A new observable, leg, condition, event, model or analytic pricer is one class;
-validation, the catalog and the graph pick it up automatically. Add a regression test in `tests/` against a closed
-form or a limiting case. After adding components, refresh the docs page with
-`$PY docs/build_catalog.py`. See the "Extending" section of
-[`SKILL.md`](./structured-derivative-pricer/SKILL.md).
+The skill uses [QuantLib](https://www.quantlib.org/) as its pricing engine. On top of the curves, calendars, day
+counts, market conventions, rate indices (`Sofr`, `Euribor`, `EuriborSwapIsdaFixA`, ...), stochastic processes and
+model calibration, and closed-form engines that QuantLib provides, it builds a pricing wrapper layer. Through the
+factory design pattern and a building-block workflow, a single command defines the components and chains them
+together.
