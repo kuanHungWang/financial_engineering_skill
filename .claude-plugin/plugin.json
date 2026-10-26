@@ -1,0 +1,12 @@
+{
+  "name": "financial-engineering",
+  "displayName": "Financial Engineering",
+  "description": "Price vanilla, exotic and structured derivatives from a YAML spec on a pre-built QuantLib engine, and write SR 11-7 style validation reports.",
+  "author": {
+    "name": "Kuanhung Wang"
+  },
+  "homepage": "https://github.com/kuanHungWang/financial_engineering_skill",
+  "repository": "https://github.com/kuanHungWang/financial_engineering_skill",
+  "keywords": ["derivatives", "structured-products", "quantlib", "pricing", "monte-carlo", "model-validation"],
+  "skills": ["./structured-derivative-pricer"]
+}

@@ -19,10 +19,40 @@ AI 即可自動選擇適配的模型元件，如 model、curve、calibration、p
 ### 需求
 
 - [Claude Code](https://docs.claude.com/en/docs/claude-code)（或其他支援 skill 的 Claude 用戶端）
-- Python 3.11（或 [uv](https://github.com/astral-sh/uv)，它會自行取得正確版本的 Python）
+- Python 3（建議 3.11），或 [uv](https://github.com/astral-sh/uv)（會自行取得 Python 3.11）
 - 首次使用時需要網路，以安裝 QuantLib、pydantic、PyYAML、NumPy 與 pandas
 
-### 安裝 skill
+### 方式一：plugin marketplace（建議）
+
+在 Claude Code 中將此儲存庫加入為 marketplace，並安裝 plugin：
+
+```text
+/plugin marketplace add kuanHungWang/financial_engineering_skill
+/plugin install financial-engineering@financial-engineering-skill
+```
+
+或在 shell 中執行相同操作：
+
+```bash
+claude plugin marketplace add kuanHungWang/financial_engineering_skill
+```
+
+```bash
+claude plugin install financial-engineering@financial-engineering-skill
+```
+
+重新啟動 Claude Code（或執行 `/reload-plugins`）後，skill 會以 `financial-engineering:structured-derivative-pricer`
+出現；當你要求評價商品時，Claude 會自動使用它。之後要更新到新版本：
+
+```bash
+claude plugin marketplace update financial-engineering-skill
+```
+
+```bash
+claude plugin update financial-engineering@financial-engineering-skill
+```
+
+### 方式二：複製 skill 資料夾
 
 複製儲存庫，並將 `structured-derivative-pricer/` 資料夾放到 Claude Code 讀取 skill 的位置。
 
@@ -39,18 +69,19 @@ mkdir -p ~/.claude/skills && cp -R financial_engineering_skill/structured-deriva
 若只想用於單一專案，改複製到該專案的 `.claude/skills/` 資料夾。若希望 `git pull` 就能更新 skill，
 也可以改用符號連結（`ln -s`）。
 
-### 建立 Python 環境（可選）
+### 方式三：其他 agent
 
-skill 第一次使用時會自動執行此步驟。若想事先完成：
+本 skill 遵循 [Agent Skills](https://agentskills.io) 標準，因此也可以用 [skills.sh](https://skills.sh) 等安裝工具
+加到其他 coding agent：
 
 ```bash
-~/.claude/skills/structured-derivative-pricer/scripts/setup.sh
+npx skills add kuanHungWang/financial_engineering_skill
 ```
 
-它會建立 `structured-derivative-pricer/.venv`，安裝 QuantLib 及其他套件，並印出其 Python 路徑。
-此腳本具冪等性：重複執行不會有任何變動。
+### 建立 Python 環境（可選）
 
-### 檢查安裝
+skill 第一次使用時會自動執行 `scripts/setup.sh`：在 skill 資料夾內建立 `.venv`，安裝 QuantLib 及其他套件，
+並印出其 Python 路徑。此腳本具冪等性：重複執行不會有任何變動。若以方式二安裝，想事先完成並檢查安裝：
 
 ```bash
 PY=$(~/.claude/skills/structured-derivative-pricer/scripts/setup.sh)
