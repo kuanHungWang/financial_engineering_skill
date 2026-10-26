@@ -20,10 +20,41 @@ as one YAML file. This avoids the "generate code → run → debug" loop entirel
 ### Requirements
 
 - [Claude Code](https://docs.claude.com/en/docs/claude-code) (or another Claude client that supports skills)
-- Python 3.11 (or [uv](https://github.com/astral-sh/uv), which fetches the right Python itself)
+- Python 3 (3.11 recommended), or [uv](https://github.com/astral-sh/uv), which fetches Python 3.11 itself
 - Network access on first use, to install QuantLib, pydantic, PyYAML, NumPy and pandas
 
-### Install the skill
+### Option 1: plugin marketplace (recommended)
+
+In Claude Code, add this repository as a marketplace and install the plugin:
+
+```text
+/plugin marketplace add kuanHungWang/financial_engineering_skill
+/plugin install financial-engineering@financial-engineering-skill
+```
+
+Or the same from your shell:
+
+```bash
+claude plugin marketplace add kuanHungWang/financial_engineering_skill
+```
+
+```bash
+claude plugin install financial-engineering@financial-engineering-skill
+```
+
+Restart Claude Code (or run `/reload-plugins`). The skill appears as
+`financial-engineering:structured-derivative-pricer`, and Claude uses it on its own when you ask to price a product.
+To get a newer version later:
+
+```bash
+claude plugin marketplace update financial-engineering-skill
+```
+
+```bash
+claude plugin update financial-engineering@financial-engineering-skill
+```
+
+### Option 2: copy the skill folder
 
 Clone the repository and put the `structured-derivative-pricer/` folder where Claude Code looks for skills.
 
@@ -40,18 +71,20 @@ mkdir -p ~/.claude/skills && cp -R financial_engineering_skill/structured-deriva
 Or for one project only, copy it into that project's `.claude/skills/` folder instead. A symlink
 (`ln -s`) works too, if you want `git pull` to update the skill.
 
-### Set up the Python environment (optional)
+### Option 3: other agents
 
-The skill runs this itself the first time it is used. To do it ahead of time:
+The skill follows the [Agent Skills](https://agentskills.io) standard, so installers such as
+[skills.sh](https://skills.sh) can add it to other coding agents too:
 
 ```bash
-~/.claude/skills/structured-derivative-pricer/scripts/setup.sh
+npx skills add kuanHungWang/financial_engineering_skill
 ```
 
-It creates `structured-derivative-pricer/.venv` with QuantLib and the other requirements, and prints the path of
-its Python. It is idempotent: running it again is a no-op.
+### Set up the Python environment (optional)
 
-### Check the install
+The skill runs `scripts/setup.sh` itself the first time it is used. It creates a `.venv` inside the skill folder
+with QuantLib and the other requirements, and prints the path of its Python. It is idempotent: running it again is
+a no-op. To do it ahead of time with a copied folder (option 2), and check the install:
 
 ```bash
 PY=$(~/.claude/skills/structured-derivative-pricer/scripts/setup.sh)

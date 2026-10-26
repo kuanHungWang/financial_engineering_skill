@@ -1,0 +1,14 @@
+{
+  "name": "financial-engineering-skill",
+  "description": "Financial engineering skills for Claude Code",
+  "owner": {
+    "name": "Kuanhung Wang"
+  },
+  "plugins": [
+    {
+      "name": "financial-engineering",
+      "source": "./",
+      "description": "Price vanilla, exotic and structured derivatives from a YAML spec on a pre-built QuantLib engine, and write SR 11-7 style validation reports."
+    }
+  ]
+}
