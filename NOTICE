@@ -1,0 +1,7 @@
+Structured Derivative Pricer
+Copyright 2026 Kuanhung Wang
+
+This product is licensed under the Apache License, Version 2.0 (see LICENSE).
+
+It uses QuantLib (https://www.quantlib.org/), which is distributed under its own
+modified BSD license and is not bundled with this repository.
