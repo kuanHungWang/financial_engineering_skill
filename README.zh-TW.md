@@ -188,6 +188,14 @@ inverse floater TARN、含 lockout 的 SOFR FRN、庫存交易的 range accrual 
 
 ---
 
+## 免責聲明
+
+本專案僅供研究與教育用途，不構成任何投資、財務、法律或稅務建議，其產出亦不代表買賣任何證券或衍生性商品的建議。
+本工具產生的價格、Greeks 與驗證報告取決於所使用的模型、市場資料與假設，可能有誤；用於交易、風險管理、會計或
+監理用途前，請自行獨立驗證。本軟體依 [Apache License 2.0](./LICENSE) 以「現狀」（AS IS）提供，不附任何形式的擔保。
+
+---
+
 ## 授權
 
 本專案採用 [Apache License 2.0](./LICENSE) 授權，署名資訊見 [NOTICE](./NOTICE)。QuantLib 為獨立的相依套件，
