@@ -202,6 +202,17 @@ together.
 
 ---
 
+## Disclaimer
+
+This project is for research and educational purposes only. It is not investment, financial, legal or tax
+advice, and nothing it produces is a recommendation to buy or sell any security or derivative. Prices, Greeks
+and validation reports it generates depend on the model, market data and assumptions supplied, and may be wrong.
+Validate them independently before relying on them for trading, risk management, accounting or regulatory
+purposes. The software is provided "AS IS", without warranty of any kind, as set out in the
+[Apache License, Version 2.0](./LICENSE).
+
+---
+
 ## License
 
 Licensed under the [Apache License, Version 2.0](./LICENSE). See [NOTICE](./NOTICE) for attribution. QuantLib
