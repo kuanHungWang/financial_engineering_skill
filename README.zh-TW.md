@@ -185,3 +185,10 @@ inverse floater TARN、含 lockout 的 SOFR FRN、庫存交易的 range accrual 
 本 skill 透過 [QuantLib](https://www.quantlib.org/) 作為評價引擎，以 QuantLib 提供的曲線、營業日曆、計息基礎、
 市場慣例、指標利率（`Sofr`、`Euribor`、`EuriborSwapIsdaFixA` 等）、隨機過程與模型校準，以及封閉解計算器為基礎，
 建構一個評價計算器封裝層，透過 factory design pattern 與積木堆疊式工作流，直接一個指令定義、串接各元件。
+
+---
+
+## 授權
+
+本專案採用 [Apache License 2.0](./LICENSE) 授權，署名資訊見 [NOTICE](./NOTICE)。QuantLib 為獨立的相依套件，
+採用其自身的修改版 BSD 授權。

@@ -199,3 +199,10 @@ counts, market conventions, rate indices (`Sofr`, `Euribor`, `EuriborSwapIsdaFix
 model calibration, and closed-form engines that QuantLib provides, it builds a pricing wrapper layer. Through the
 factory design pattern and a building-block workflow, a single command defines the components and chains them
 together.
+
+---
+
+## License
+
+Licensed under the [Apache License, Version 2.0](./LICENSE). See [NOTICE](./NOTICE) for attribution. QuantLib
+is a separate dependency under its own modified BSD license.
