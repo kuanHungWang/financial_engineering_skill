@@ -164,3 +164,61 @@ def test_cli_solve_and_errors():
     assert out["reprice"].startswith("--set trade.legs.0.rate=")
     code, out = cli("solve", note, "--param", "trade.legs.0.schedule", "--target", "1")
     assert code == 2 and out["errors"][0]["path"] == "trade.legs.0.schedule"
+
+
+# ------------------------------------------------------------------ review fixes
+def test_x_tol_never_stops_below_num_paths():
+    doc = load("autocallable_note.yaml")
+    doc["pricing"]["num_paths"] = 8000
+    out = solve(doc, EX, "trade.legs.0.rate", 980000.0, bracket=(0.0, 0.2), x_tol=0.5, log=QUIET)
+    assert out["stop_reason"] == "x_tol reached" and out["num_paths"] == 8000
+
+
+def test_later_stages_stay_inside_the_first_bracket():
+    # a root at the edge of the bracket: the probe's +/- sigma would leave [lo, hi]
+    doc = load("autocallable_note.yaml")
+    doc["pricing"]["num_paths"] = 8000
+    p = "trade.legs.0.rate"
+    at_zero = reprice(doc, p, 0.0)["price"]
+    out = solve(doc, EX, p, at_zero + 1.0, bracket=(0.0, 0.2), log=QUIET)
+    for e in out["stages"]:
+        assert e["bracket"][0] >= 0.0
+    assert out["solution"] >= 0.0
+
+
+@pytest.mark.parametrize("kw, fragment", [
+    ({"start_paths": 0}, "start_paths must be a positive integer"),
+    ({"start_paths": -4}, "start_paths must be a positive integer"),
+    ({"max_paths": 0}, "max_paths must be a positive integer"),
+])
+def test_bad_path_counts(kw, fragment):
+    with pytest.raises(SolveError) as e:
+        solve(load("autocallable_note.yaml"), EX, "trade.legs.0.rate", 980000.0, log=QUIET, **kw)
+    assert fragment in str(e.value)
+
+
+@pytest.mark.parametrize("param", ["pricing.num_paths", "pricing.seed"])
+def test_pricing_settings_are_not_solvable(param):
+    with pytest.raises(SolveError) as e:
+        solve(load("autocallable_note.yaml"), EX, param, 980000.0, log=QUIET)
+    assert "pricing setting" in str(e.value)
+
+
+def test_exercise_fit_paths_are_simulated_once_per_stage(monkeypatch):
+    import pricer.engine as eng
+    doc = load("callable_fixed_rate_bond.yaml")
+    doc["pricing"]["num_paths"] = 4000
+    calls = []
+    real = eng._resimulate
+
+    def counting(plan, r, n, seed):
+        before = r.get(eng.FIT_FIXINGS)
+        out = real(plan, r, n, seed)
+        calls.append(before is None)
+        return out
+    monkeypatch.setattr(eng, "_resimulate", counting)
+    out = solve(doc, EX, "trade.legs.0.rate", 1000000.0, bracket=(0.01, 0.1), log=QUIET)
+    assert sum(calls) == len(out["stages"])          # a fresh fit simulation only on each stage's first run
+    assert len(calls) == out["evaluations"]
+    fresh = reprice(doc, "trade.legs.0.rate", out["solution"])
+    assert fresh["price"] == pytest.approx(out["price_at_solution"], rel=1e-12)

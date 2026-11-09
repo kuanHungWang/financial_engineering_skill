@@ -733,21 +733,27 @@ def _sim_curve(plan, h, ref, horizon):
 # ------------------------------------------------------------------ execution
 INSPECT_READS = "_inspect_reads"   # results key: observable name -> {date: values} (PCtx.reads), when inspecting
 INSPECT_FLOWS = "_inspect_flows"   # results key: the price node's per-path cashflows and PV, when inspecting
+FIT_FIXINGS = "_fit_fixings"       # results key: the independent paths the exercise rule was fitted on
 
 
-def run(plan: Plan, keep: dict | None = None, preset: dict | None = None) -> dict:
+def run(plan: Plan, keep: dict | None = None, preset: dict | None = None,
+        node_results: dict | None = None) -> dict:
     """Execute the graph. Library chatter goes to stderr so stdout stays JSON.
     keep: when given, receives every node result under keep["results"] (see pricer/inspection.py).
     preset: node results to use instead of computing those nodes (pricer/solve.py reuses the simulation of an
-    earlier run whose inputs to those nodes were identical); a preset node gets no timing."""
+    earlier run whose inputs to those nodes were identical); a preset node gets no timing.
+    node_results: when given, receives every node result (plus FIT_FIXINGS) without the per-path recording that
+    `keep` turns on for inspection."""
     if not plan.report.ok:
         raise RuntimeError("plan has validation errors; fix them before running")
     with contextlib.redirect_stdout(sys.stderr):
-        return _run(plan, keep, preset)
+        return _run(plan, keep, preset, node_results)
 
 
-def _run(plan: Plan, keep: dict | None = None, preset: dict | None = None) -> dict:
+def _run(plan: Plan, keep: dict | None = None, preset: dict | None = None, node_results: dict | None = None) -> dict:
     results, timings = dict(preset or {}), {}
+    if node_results is not None:
+        node_results["results"] = results
     if keep is not None:
         results[INSPECT_READS], results[INSPECT_FLOWS] = {}, {}
         keep["results"] = results
@@ -922,7 +928,11 @@ def _resimulate(plan: Plan, r, n, seed) -> dict:
     s = plan.input.pricing
     rr = {k: x for k, x in r.items() if k == "model" or k.startswith(("curve:", "discount:", "underlying:",
                                                                          "schedule:"))}
-    rr["fixings"] = r["model"].simulate(plan.sim_dates, plan.pay_dates, n, seed, s.antithetic, s.steps_per_year)
+    fx = r.get(FIT_FIXINGS)          # kept (or preset by pricer/solve.py) so a re-run with the same model reuses them
+    if fx is None or fx.n_paths != n:
+        fx = r[FIT_FIXINGS] = r["model"].simulate(plan.sim_dates, plan.pay_dates, n, seed, s.antithetic,
+                                                  s.steps_per_year)
+    rr["fixings"] = fx
 
     def ev(key):
         if key not in rr:

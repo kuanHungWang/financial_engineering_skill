@@ -273,9 +273,10 @@ the value of one numeric field at which the price equals `PRICE` (in price units
   the simulated paths are reused; only the parameter's leg or event, and the price, are recomputed. `--growth 4`
   adds intermediate stages; it rarely helps.
 - **Precision.** The root's Monte Carlo error is `solution_std_error = price_std_error / |slope|`, and
-  `solution_confidence_interval` is the root's interval. `--x-tol T` raises the path count until that interval's
-  half-width is at most `T` (capped by `--max-num-paths`, default 2,000,000) instead of stopping at
-  `pricing.num_paths`.
+  `solution_confidence_interval` is the root's interval. `--x-tol T` raises the path count above
+  `pricing.num_paths` until that interval's half-width is at most `T` (capped by `--max-num-paths`, default
+  2,000,000); it never stops below `pricing.num_paths`. Every later stage stays inside the first stage's bracket.
+  `PATH` may not be a `pricing.*` setting.
 - **Report** `solution` with its interval, `price_at_solution` and `price_std_error`, `num_paths`, and every
   warning. A warning that the price misses the target by more than a std error means the price jumps in the
   parameter on these paths (a barrier observed on discrete dates): the solution is the jump. `result` is the full

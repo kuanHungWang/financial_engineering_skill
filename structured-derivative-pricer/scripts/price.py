@@ -63,7 +63,7 @@ def main(argv=None):
                                 "default: the current value +/-10%%")
             p.add_argument("--x-tol", type=float, metavar="T",
                            help="stop when the confidence half-width of the solution is <= T, raising the path "
-                                "count as needed (default: solve at pricing.num_paths)")
+                                "count above pricing.num_paths as needed (never stopping below it)")
             p.add_argument("--start-paths", type=int, metavar="N",
                            help="paths of the first stage (default max(2000, final/64))")
             p.add_argument("--max-num-paths", type=int, metavar="N",
@@ -130,7 +130,7 @@ def main(argv=None):
     if a.cmd == "solve":
         try:
             result = solve(doc, base, a.param, a.target, bracket=a.bracket, x_tol=a.x_tol,
-                           start_paths=a.start_paths, max_paths=a.max_num_paths, growth=a.growth)
+                           start_paths=a.start_paths, max_paths=a.max_num_paths, growth=a.growth, plan=plan)
         except SolveError as e:
             _dump({"ok": False, "errors": [{"severity": "error", "path": e.path, "message": str(e), **e.details}]})
             return 2

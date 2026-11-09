@@ -44,7 +44,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from statistics import NormalDist
 
-from .engine import OverrideError, build_plan, get_path, run, set_path
+from .engine import FIT_FIXINGS, OverrideError, _split_path, build_plan, get_path, run, set_path
 
 MAX_NUM_PATHS = 2_000_000
 
@@ -123,11 +123,11 @@ class _Pricer:
     """Prices the document with the parameter set to x at N paths; reuses the parameter-free nodes of the first
     run at the same N."""
 
-    def __init__(self, doc, base, param, log):
+    def __init__(self, doc, base, param, log, base_plan):
         self.doc, self.base, self.param, self.log = doc, base, param, log
         self.cache = {}            # num_paths -> (signature, {node: result})
         self.evaluations = []
-        self.direct = _direct_nodes(doc, param)
+        self.direct = _direct_nodes(base_plan, param)
 
     def plan(self, x, n):
         d = copy.deepcopy(self.doc)
@@ -151,10 +151,10 @@ class _Pricer:
         cached = self.cache.get(key)
         if self.direct is not None and cached and cached[0] == sig:
             preset, reused = cached[1], True
-        keep = {} if self.direct is not None and not cached else None
-        res = run(plan, keep=keep, preset=preset)
-        if keep is not None:
-            self.cache = {key: (sig, _reusable(plan, keep["results"], self.direct))}   # one N at a time
+        out = {} if self.direct is not None and not reused else None
+        res = run(plan, preset=preset, node_results=out)
+        if out is not None:
+            self.cache = {key: (sig, _reusable(plan, out["results"], self.direct))}   # one N at a time
         e = Evaluation(float(x), plan.input.pricing.num_paths if plan.method == "mc" else 0, res["price"],
                        res.get("std_error") or 0.0, time.perf_counter() - t, reused, res)
         self.evaluations.append(e)
@@ -163,18 +163,19 @@ class _Pricer:
         return e
 
 
-def _direct_nodes(doc, param):
-    """Graph nodes the parameter feeds directly; None if it may feed the simulation (then nothing is reused)."""
-    parts = param.replace("[", ".").replace("]", "").split(".")
-    try:
-        if parts[:2] == ["trade", "legs"] and len(parts) > 3:
-            return {f"leg:{doc['trade']['legs'][int(parts[2])]['id']}"}
-        if parts[:2] == ["trade", "termination_events"] and len(parts) > 3:
-            return {f"event:{doc['trade']['termination_events'][int(parts[2])]['id']}"}
-        if parts[0] == "observables" and len(parts) > 2:
-            return {f"observable:{parts[1]}"}
-    except (KeyError, IndexError, ValueError, TypeError):
-        pass
+def _direct_nodes(plan, param):
+    """Graph nodes the parameter feeds directly; None if it may feed the simulation (then nothing is reused).
+    Leg and event ids come from the validated plan, whose input paths are trade.legs[i] / trade.termination_events[i]."""
+    parts = _split_path(param)
+    if len(parts) > 3 and parts[:2] in (["trade", "legs"], ["trade", "termination_events"]) and parts[2].isdigit():
+        owner = f"trade.{parts[1]}[{parts[2]}]"
+        kind = "leg" if parts[1] == "legs" else "event"
+        for _, spec, path in plan.trade.legs + plan.trade.events:
+            if path == owner:
+                return {f"{kind}:{spec.id}"}
+        return None
+    if len(parts) > 2 and parts[0] == "observables" and f"observable:{parts[1]}" in plan.nodes:
+        return {f"observable:{parts[1]}"}
     return None
 
 
@@ -196,7 +197,10 @@ def _reusable(plan, results, direct):
         if k not in stale:
             stale.add(k)
             todo.extend(dependents.get(k, ()))
-    return {k: v for k, v in results.items() if k in plan.nodes and k not in stale}
+    keep = {k: v for k, v in results.items() if k in plan.nodes and k not in stale}
+    if FIT_FIXINGS in results and "model" not in stale:      # the exercise rule's fit paths depend on the model only
+        keep[FIT_FIXINGS] = results[FIT_FIXINGS]
+    return keep
 
 
 # ------------------------------------------------------------------ the search
@@ -207,9 +211,10 @@ def _even(n, antithetic):
 
 def solve(doc: dict, base_dir: Path | str, param: str, target: float, bracket=None, x_tol: float | None = None,
           start_paths: int | None = None, max_paths: int | None = None, growth: float | None = None,
-          width_sigmas: float = 4.0, max_expansions: int = 12, log=None) -> dict:
+          width_sigmas: float = 4.0, max_expansions: int = 12, log=None, plan=None) -> dict:
     """Find x with price(param = x) = target. See the module docstring for the method.
-    growth: path multiplier between stages; None goes from the probe straight to the final path count."""
+    growth: path multiplier between stages; None goes from the probe straight to the final path count.
+    plan: the already-built plan of `doc` as given, if the caller has one (saves building it again)."""
     log = log or (lambda m: print(m, file=sys.stderr))
     t0 = time.perf_counter()
     try:
@@ -219,6 +224,12 @@ def solve(doc: dict, base_dir: Path | str, param: str, target: float, bracket=No
     if isinstance(x0, bool) or not isinstance(x0, (int, float)):
         raise SolveError(f"{param} is {x0!r}; only a number can be solved for (write the field as a number "
                          "first, e.g. a single rate instead of a per-period list)", param)
+    if _split_path(param)[0] == "pricing":
+        raise SolveError(f"{param} is a pricing setting, not a term-sheet value: solving for it would change the "
+                         "paths the search holds fixed", param)
+    for name, v in (("start_paths", start_paths), ("max_paths", max_paths)):
+        if v is not None and (isinstance(v, bool) or not isinstance(v, int) or v < 1):
+            raise SolveError(f"{name} must be a positive integer, got {v!r}", name)
     if growth is not None and growth <= 1:
         raise SolveError("growth must be > 1", "growth")
     if x_tol is not None and not x_tol > 0:
@@ -231,14 +242,17 @@ def solve(doc: dict, base_dir: Path | str, param: str, target: float, bracket=No
         step = 0.1 * abs(x0) if x0 else 0.01
         lo, hi = x0 - step, x0 + step
 
-    price = _Pricer(doc, base_dir, param, log)
-    base = price.plan(x0, None)
+    base = plan if plan is not None else build_plan(copy.deepcopy(doc), base_dir)
+    if not base.report.ok:
+        raise SolveError("the input is invalid; run validate", "", {"errors": base.report.to_dict()["errors"]})
+    price = _Pricer(doc, base_dir, param, log, base)
     s = base.input.pricing
     mc = base.method == "mc"
     conf = s.confidence
     z = NormalDist().inv_cdf(0.5 + conf / 2)
     cap = min(max_paths or MAX_NUM_PATHS, MAX_NUM_PATHS)
     final = cap if x_tol is not None else min(s.num_paths, cap)
+    floor = min(s.num_paths, cap)       # x_tol may stop the search only at or above pricing.num_paths
     if mc:
         n = _even(min(start_paths or max(2000, min(final, s.num_paths) // 64), final), s.antithetic)
     else:
@@ -279,12 +293,15 @@ def solve(doc: dict, base_dir: Path | str, param: str, target: float, bracket=No
             expansions += 1
         return a, b, ga, gb, expansions
 
-    def secant_bracket(g, x, gx, slope, xtol, steps=4):
+    def secant_bracket(g, x, gx, slope, xtol, A, B, steps=4):
         """From the previous stage's root and slope: secant steps, each overshooting by xtol/2 so the sign flips
-        as soon as the step is right. Returns a bracket, or None after `steps` steps without a sign change."""
+        as soon as the step is right, kept inside [A, B]. Returns a bracket, or None after `steps` steps without a
+        sign change (or when a step would leave [A, B])."""
         for _ in range(steps):
             step = -gx / slope
-            xn = x + step + math.copysign(xtol / 2, step)
+            xn = min(max(x + step + math.copysign(xtol / 2, step), A), B)
+            if xn == x:
+                return None
             gn = g(xn)
             if gn == 0 or (gn > 0) != (gx > 0):
                 return (x, xn, gx, gn) if x < xn else (xn, x, gn, gx)
@@ -295,6 +312,7 @@ def solve(doc: dict, base_dir: Path | str, param: str, target: float, bracket=No
 
     stages, warnings_ = [], []
     sigma_x, root, slope, stop = None, None, None, None
+    A = B = None                                    # stage 1's bracket: every later point stays inside it
     while True:
         st = time.perf_counter()
         k0 = len(price.evaluations)
@@ -305,6 +323,7 @@ def solve(doc: dict, base_dir: Path | str, param: str, target: float, bracket=No
             a, b = lo, hi
             ga, gb = g(a), g(b)
             a, b, ga, gb, expansions = widen(g, a, b, ga, gb, k0)
+            A, B = a, b
             slope = (gb - ga) / (b - a)
             if slope == 0:
                 raise SolveError(f"the price does not change with {param} between {a:.6g} and {b:.6g}", param)
@@ -312,15 +331,24 @@ def solve(doc: dict, base_dir: Path | str, param: str, target: float, bracket=No
         else:                                       # later stages: start at the last root, step with its slope
             g1 = g(root)
             xtol = tolerance(price.evaluations[-1].std_error / abs(slope), last)
-            br = secant_bracket(g, root, g1, slope, xtol)
+            br = secant_bracket(g, root, g1, slope, xtol, A, B)
             if br is not None:
                 a, b, ga, gb = br
                 start = "secant from the previous stage"
-            else:
+            else:                                   # +/- width_sigmas around the last root, then all of [A, B]
                 half = width_sigmas * sigma_x
-                a, b = root - half, root + half
+                a, b = max(A, root - half), min(B, root + half)
                 ga, gb = g(a), g(b)
-                a, b, ga, gb, expansions = widen(g, a, b, ga, gb, k0)
+                start = "previous root +/- %g sigma" % width_sigmas
+                if (ga > 0) == (gb > 0) and ga != 0 and gb != 0 and (a, b) != (A, B):
+                    a, b = A, B
+                    ga, gb = g(a), g(b)
+                    start = "stage 1 bracket"
+                if (ga > 0) == (gb > 0) and ga != 0 and gb != 0:
+                    raise SolveError(
+                        f"at {n} paths the price no longer crosses the target {target:g} between {param} = {A:.6g} "
+                        f"and {B:.6g} (price {ga + target:.6g} .. {gb + target:.6g}): the root at fewer paths was "
+                        "within Monte Carlo error of a bracket end; give a wider --bracket", "bracket")
         try:
             root, _, _ = brent(g, a, b, ga, gb, xtol=xtol)
         except BrentError as e:
@@ -340,7 +368,7 @@ def solve(doc: dict, base_dir: Path | str, param: str, target: float, bracket=No
         if not mc or sigma_x == 0:
             stop = "closed form" if not mc else "price has no Monte Carlo error"
             break
-        if x_tol is not None and z * sigma_x <= x_tol:
+        if x_tol is not None and z * sigma_x <= x_tol and n >= floor:
             stop = "x_tol reached"
             break
         if last:
@@ -349,7 +377,7 @@ def solve(doc: dict, base_dir: Path | str, param: str, target: float, bracket=No
         n_next = n * growth if growth else final
         if x_tol is not None:                       # paths for the CI to reach x_tol, if fewer than growth x
             need = n * (z * sigma_x / x_tol) ** 2 * 1.1
-            n_next = min(n_next, max(need, 1.5 * n))
+            n_next = max(min(n_next, max(need, 1.5 * n)), floor)
         n = _even(min(n_next, final), s.antithetic)
 
     final_eval = next(e for e in reversed(price.evaluations) if e.x == root)
