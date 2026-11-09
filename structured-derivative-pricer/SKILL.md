@@ -96,6 +96,8 @@ project has its own structure; follow it (see "Reusing a validated model" and "F
    to tighten the error without editing the file.
 8. **Check, then report.** See "Reading the result" below.
 9. **Intermediate results, on request** (UAT, model review): `price.py inspect trade.yaml`. See below.
+   **A term-sheet value for a target price, on request** (the coupon at which the note prices at 98%, the barrier
+   that makes it worth par): `price.py solve`. See "Solving for a term-sheet value" below.
 10. **Model documentation / validation report, on request.** See "Validation report" below.
 11. **Offer a stand-alone copy.** After the first successful price in a project, ask the user once, without being asked:
     the trade YAML alone cannot be re-priced without this skill, so offer to copy the engine into their project. See
@@ -253,6 +255,33 @@ assumptions (model type, and whether the data is mock). For a calibrated `hull_w
 `mean_reversion` / `volatility` and the worst swaption miss from `model_diagnostics.calibration`. For model risk on path-dependent
 products, it can help to price under both `black_scholes` (local vol from the surface) and
 `heston`, and show the gap.
+
+## Solving for a term-sheet value
+
+`price.py solve trade.yaml --param PATH --target PRICE [--bracket LO HI] [--x-tol T] [--set ...] [--out FILE]` finds
+the value of one numeric field at which the price equals `PRICE` (in price units, e.g. `980000` for 98% of a
+1,000,000 notional). `PATH` uses the `--set` syntax (`trade.legs.0.rate`, `trade.termination_events.0.barrier`,
+`trade.legs.2.strike`). It is not a sensitivity; Greeks come from bumped `price.py` runs.
+
+- **Give a `--bracket`** of two valid values that price on either side of the target (a coupon between 0 and 20%, a
+  barrier between 100% and 130%). Without one the search starts at the current value +/-10% and widens, and may
+  wander into invalid values (a negative barrier); it stops with the prices it saw. A price that is not monotone in
+  the parameter (an autocall barrier) can have no root, or several, in a wide bracket: price a few values first.
+- **Method.** Brent's method with the trade's seed held fixed (common random numbers), so the Monte Carlo price is a
+  deterministic function of the parameter. A probe stage at `num_paths / 64` (at least 2,000) searches the bracket.
+  The final stage at `pricing.num_paths` starts at the probe's root and slope and needs 3-4 prices. Within a stage
+  the simulated paths are reused; only the parameter's leg or event, and the price, are recomputed. `--growth 4`
+  adds intermediate stages; it rarely helps.
+- **Precision.** The root's Monte Carlo error is `solution_std_error = price_std_error / |slope|`, and
+  `solution_confidence_interval` is the root's interval. `--x-tol T` raises the path count above
+  `pricing.num_paths` until that interval's half-width is at most `T` (capped by `--max-num-paths`, default
+  2,000,000); it never stops below `pricing.num_paths`. Every later stage stays inside the first stage's bracket.
+  `PATH` may not be a `pricing.*` setting.
+- **Report** `solution` with its interval, `price_at_solution` and `price_std_error`, `num_paths`, and every
+  warning. A warning that the price misses the target by more than a std error means the price jumps in the
+  parameter on these paths (a barrier observed on discrete dates): the solution is the jump. `result` is the full
+  price result at the solution; `reprice` gives the `--set` arguments that reproduce it exactly with
+  `price.py price`. Write the solved value into the trade file only if the user asks.
 
 ## Inspecting intermediate results
 

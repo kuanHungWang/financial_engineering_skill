@@ -382,6 +382,7 @@ Run from anywhere; paths are relative to your current directory.
 {name}/price.sh price trade.yaml --out result.json
 {name}/price.sh price trade.yaml --set pricing.num_paths=200000     # tighter Monte Carlo error
 {name}/price.sh inspect trade.yaml --out-dir diagnostics/inspect    # every intermediate result as CSV
+{name}/price.sh solve trade.yaml --param trade.legs.0.rate --target 980000 --bracket 0 0.2  # coupon for a price
 {name}/price.sh catalog leg                # every component, field, default and allowed value
 ```
 

@@ -9,6 +9,10 @@
                                              price, then write intermediate results (paths, cashflows, curves,
                                              DCF, model parameters, ...) as CSV/JSON to DIR; prints only a
                                              small manifest, never the data
+    price.py solve INPUT --param PATH --target PRICE [--bracket LO HI] [--x-tol T] [--set k=v ...] [--out FILE]
+                                             find the value of one numeric field (a coupon rate, barrier, strike)
+                                             at which the price equals PRICE; Brent's method on common random
+                                             numbers: a cheap probe stage, then the full path count
 
 INPUT is a YAML/JSON file, '-' for stdin, or a literal YAML/JSON string.
 --set PATH=VALUE: PATH is dot-separated; numeric segments index lists (trade.legs.0.rate,
@@ -28,6 +32,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 warnings.filterwarnings("ignore")
 
 from pricer import OverrideError, apply_overrides, build_plan, catalog, load_document, run  # noqa: E402
+from pricer.solve import SolveError, solve  # noqa: E402
 from pricer.inspection import InspectError, inspect, safe_name, select  # noqa: E402
 
 
@@ -41,14 +46,30 @@ def main(argv=None):
     c = sub.add_parser("catalog")
     c.add_argument("kind", nargs="?", choices=["curve", "vol", "swaption_vol", "schedule", "model", "observable", "leg",
                                                "condition", "event", "analytic"])
-    for name in ("validate", "plan", "price", "inspect"):
+    for name in ("validate", "plan", "price", "inspect", "solve"):
         p = sub.add_parser(name)
         p.add_argument("input")
         p.add_argument("--set", action="append", default=[], metavar="PATH=VALUE",
                        help="override a field, e.g. --set pricing.num_paths=50000; "
                             "numeric segments index lists: --set trade.legs.0.rate=0.09")
-        if name == "price":
+        if name in ("price", "solve"):
             p.add_argument("--out", help="also write the result JSON to this file")
+        if name == "solve":
+            p.add_argument("--param", required=True, metavar="PATH",
+                           help="the numeric field to solve for, e.g. trade.legs.0.rate")
+            p.add_argument("--target", required=True, type=float, help="the price to reach, in price units")
+            p.add_argument("--bracket", nargs=2, type=float, metavar=("LO", "HI"),
+                           help="values of PATH pricing on either side of the target (widened if not); "
+                                "default: the current value +/-10%%")
+            p.add_argument("--x-tol", type=float, metavar="T",
+                           help="stop when the confidence half-width of the solution is <= T, raising the path "
+                                "count above pricing.num_paths as needed (never stopping below it)")
+            p.add_argument("--start-paths", type=int, metavar="N",
+                           help="paths of the first stage (default max(2000, final/64))")
+            p.add_argument("--max-num-paths", type=int, metavar="N",
+                           help="path cap with --x-tol (default 2,000,000)")
+            p.add_argument("--growth", type=float,
+                           help="path multiplier between stages (default: one probe stage, then the final count)")
         if name == "inspect":
             p.add_argument("--node", action="append", default=[], metavar="KEY",
                            help="graph node to write (repeatable): an exact key from `plan` (leg:coupon, curve:USD) "
@@ -104,6 +125,22 @@ def main(argv=None):
                    "traceback": traceback.format_exc().splitlines()[-6:]})
             return 1
         _dump(manifest)
+        return 0
+
+    if a.cmd == "solve":
+        try:
+            result = solve(doc, base, a.param, a.target, bracket=a.bracket, x_tol=a.x_tol,
+                           start_paths=a.start_paths, max_paths=a.max_num_paths, growth=a.growth, plan=plan)
+        except SolveError as e:
+            _dump({"ok": False, "errors": [{"severity": "error", "path": e.path, "message": str(e), **e.details}]})
+            return 2
+        except Exception as e:
+            _dump({"ok": False, "stage": "solve", "error": f"{type(e).__name__}: {e}",
+                   "traceback": traceback.format_exc().splitlines()[-6:]})
+            return 1
+        if a.out:
+            Path(a.out).write_text(json.dumps(result, indent=2, default=str))
+        _dump(result)
         return 0
 
     try:

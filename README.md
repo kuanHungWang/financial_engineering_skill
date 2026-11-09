@@ -136,6 +136,12 @@ On request (UAT, model review), `price.py inspect` re-prices the trade exactly (
 the output of every step to disk: paths, fixings, cashflows, discount factors, exercise state and regression
 coefficients, as CSV and JSON.
 
+`price.py solve` works backwards from a price: it finds the coupon rate, barrier or strike at which the trade is
+worth a target (e.g. the coupon that prices a note at 98% of par). It uses Brent's method with a fixed seed, so the
+Monte Carlo price is a smooth function of the parameter. A cheap low-path probe finds the root and the slope. The
+full path count then starts from them and needs only 3-4 more prices. The answer comes with its own Monte Carlo
+confidence interval.
+
 ### 2. Write validation reports and explain price changes
 
 `report.py evidence` runs the tests a reviewer expects (convergence, seed stability, sensitivities, stress,

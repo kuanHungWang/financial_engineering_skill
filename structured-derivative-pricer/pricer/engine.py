@@ -145,39 +145,72 @@ def apply_overrides(doc: dict, sets: list[str]) -> dict:
         key, eq, val = s.partition("=")
         if not eq or not key:
             raise OverrideError(key, f"--set expects PATH=VALUE, got {s!r}")
-        parts = re.sub(r"\[([0-9]+)\]", r".\1", key).split(".")
-        if any(p == "" for p in parts):
-            raise OverrideError(key, f"--set path {key!r} has an empty segment")
-        if any("[" in p or "]" in p for p in parts):
-            raise OverrideError(key, f"--set path {key!r}: list indices must be non-negative integers, "
-                                     "e.g. legs[0] or legs.0")
+        _split_path(key)                  # path errors before value errors
         try:
             value = yaml.safe_load(val)
         except yaml.YAMLError as e:
             raise OverrideError(key, f"--set value for {key!r} is not valid YAML: {e}") from None
-        node = doc
-        for i, p in enumerate(parts):
-            here = ".".join(parts[:i]) or "<root>"
-            last = i == len(parts) - 1
-            if isinstance(node, list):
-                if not (p.isascii() and p.isdigit()):
-                    raise OverrideError(key, f"{here} is a list; index it with a number, not {p!r}")
-                idx = int(p)
-                if idx >= len(node):
-                    raise OverrideError(key, f"index {idx} out of range: {here} has {len(node)} item(s)")
-                if last:
-                    node[idx] = value
-                else:
-                    node = node[idx]
-            elif isinstance(node, dict):
-                if last:
-                    node[p] = value
-                else:
-                    node = node.setdefault(p, {})
-            else:
-                raise OverrideError(key, f"cannot set {p!r} inside {here}: it is a {type(node).__name__}, "
-                                         "not a mapping or list")
+        set_path(doc, key, value)
     return doc
+
+
+def _split_path(key: str) -> list[str]:
+    parts = re.sub(r"\[([0-9]+)\]", r".\1", key).split(".")
+    if any(p == "" for p in parts):
+        raise OverrideError(key, f"--set path {key!r} has an empty segment")
+    if any("[" in p or "]" in p for p in parts):
+        raise OverrideError(key, f"--set path {key!r}: list indices must be non-negative integers, "
+                                 "e.g. legs[0] or legs.0")
+    return parts
+
+
+def set_path(doc: dict, key: str, value, create: bool = True):
+    """Set the field at a dotted PATH (numeric segments index lists). create=False: every segment must exist."""
+    parts = _split_path(key)
+    node = doc
+    for i, p in enumerate(parts):
+        here = ".".join(parts[:i]) or "<root>"
+        last = i == len(parts) - 1
+        if isinstance(node, list):
+            if not (p.isascii() and p.isdigit()):
+                raise OverrideError(key, f"{here} is a list; index it with a number, not {p!r}")
+            idx = int(p)
+            if idx >= len(node):
+                raise OverrideError(key, f"index {idx} out of range: {here} has {len(node)} item(s)")
+            if last:
+                node[idx] = value
+            else:
+                node = node[idx]
+        elif isinstance(node, dict):
+            if not create and p not in node:
+                raise OverrideError(key, f"{here} has no field {p!r}")
+            if last:
+                node[p] = value
+            else:
+                node = node.setdefault(p, {})
+        else:
+            raise OverrideError(key, f"cannot set {p!r} inside {here}: it is a {type(node).__name__}, "
+                                     "not a mapping or list")
+    return doc
+
+
+def get_path(doc: dict, key: str):
+    """The field at a dotted PATH; OverrideError if any segment is missing."""
+    node = doc
+    parts = _split_path(key)
+    for i, p in enumerate(parts):
+        here = ".".join(parts[:i]) or "<root>"
+        if isinstance(node, list):
+            if not (p.isascii() and p.isdigit()) or int(p) >= len(node):
+                raise OverrideError(key, f"{here} is a list of {len(node)} item(s); {p!r} is not an index of it")
+            node = node[int(p)]
+        elif isinstance(node, dict):
+            if p not in node:
+                raise OverrideError(key, f"{here} has no field {p!r}")
+            node = node[p]
+        else:
+            raise OverrideError(key, f"{here} is a {type(node).__name__}, not a mapping or list")
+    return node
 
 
 # ------------------------------------------------------------------ planning
@@ -700,19 +733,27 @@ def _sim_curve(plan, h, ref, horizon):
 # ------------------------------------------------------------------ execution
 INSPECT_READS = "_inspect_reads"   # results key: observable name -> {date: values} (PCtx.reads), when inspecting
 INSPECT_FLOWS = "_inspect_flows"   # results key: the price node's per-path cashflows and PV, when inspecting
+FIT_FIXINGS = "_fit_fixings"       # results key: the independent paths the exercise rule was fitted on
 
 
-def run(plan: Plan, keep: dict | None = None) -> dict:
+def run(plan: Plan, keep: dict | None = None, preset: dict | None = None,
+        node_results: dict | None = None) -> dict:
     """Execute the graph. Library chatter goes to stderr so stdout stays JSON.
-    keep: when given, receives every node result under keep["results"] (see pricer/inspection.py)."""
+    keep: when given, receives every node result under keep["results"] (see pricer/inspection.py).
+    preset: node results to use instead of computing those nodes (pricer/solve.py reuses the simulation of an
+    earlier run whose inputs to those nodes were identical); a preset node gets no timing.
+    node_results: when given, receives every node result (plus FIT_FIXINGS) without the per-path recording that
+    `keep` turns on for inspection."""
     if not plan.report.ok:
         raise RuntimeError("plan has validation errors; fix them before running")
     with contextlib.redirect_stdout(sys.stderr):
-        return _run(plan, keep)
+        return _run(plan, keep, preset, node_results)
 
 
-def _run(plan: Plan, keep: dict | None = None) -> dict:
-    results, timings = {}, {}
+def _run(plan: Plan, keep: dict | None = None, preset: dict | None = None, node_results: dict | None = None) -> dict:
+    results, timings = dict(preset or {}), {}
+    if node_results is not None:
+        node_results["results"] = results
     if keep is not None:
         results[INSPECT_READS], results[INSPECT_FLOWS] = {}, {}
         keep["results"] = results
@@ -887,7 +928,11 @@ def _resimulate(plan: Plan, r, n, seed) -> dict:
     s = plan.input.pricing
     rr = {k: x for k, x in r.items() if k == "model" or k.startswith(("curve:", "discount:", "underlying:",
                                                                          "schedule:"))}
-    rr["fixings"] = r["model"].simulate(plan.sim_dates, plan.pay_dates, n, seed, s.antithetic, s.steps_per_year)
+    fx = r.get(FIT_FIXINGS)          # kept (or preset by pricer/solve.py) so a re-run with the same model reuses them
+    if fx is None or fx.n_paths != n:
+        fx = r[FIT_FIXINGS] = r["model"].simulate(plan.sim_dates, plan.pay_dates, n, seed, s.antithetic,
+                                                  s.steps_per_year)
+    rr["fixings"] = fx
 
     def ev(key):
         if key not in rr:
